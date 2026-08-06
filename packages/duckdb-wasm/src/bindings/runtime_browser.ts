@@ -611,7 +611,13 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
             return 0;
         }
         try {
-            const file = BROWSER_RUNTIME.getFileInfo(mod, fileId);
+            // Fix #5: avoid calling getFileInfo() on every read — it triggers a WASM
+            // round-trip through the global WASMResponseBuffer (race-prone with pthreads).
+            // File info is stable for HTTP/S3 files after open; use the cache directly.
+            const file = BROWSER_RUNTIME._fileInfoCache.get(fileId);
+            if (!file) {
+                throw new Error(`File info not cached for fileId ${fileId} — openFile must be called first`);
+            }
             switch (file?.dataProtocol) {
                 // File reading from BLOB or HTTP MUST be done with range requests.
                 // We have to check in OPEN if such file supports range requests and upgrade to BUFFER if not.
@@ -631,31 +637,39 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         xhr.responseType = 'arraybuffer';
                         xhr.setRequestHeader('Range', `bytes=${location}-${location + bytes - 1}`);
                         xhr.send(null);
-                        if (
-                            xhr.status == 206 /* Partial content */ ||
-                            (xhr.status == 200 && bytes == xhr.response.byteLength && location == 0)
-                        ) {
-                            const src = new Uint8Array(xhr.response, 0, Math.min(xhr.response.byteLength, bytes));
-                            mod.HEAPU8.set(src, buf);
-                            return src.byteLength;
-                        } else if (xhr.status == 200) {
-                            // TODO: here we are actually throwing away all non-relevant bytes, but this is still better than failing
-                            //       proper solution would require notifying duckdb-wasm cache, while we are piggybackign on browser cache
-                            console.warn(
-                                `Range request for ${file.dataUrl} did not return a partial response: ${xhr.status} "${xhr.statusText}"`,
-                            );
-                            const src = new Uint8Array(
-                                xhr.response,
-                                location,
-                                Math.min(xhr.response.byteLength - location, bytes),
-                            );
-                            mod.HEAPU8.set(src, buf);
-                            return src.byteLength;
-                        } else {
+
+                        // Fix #4: strict validation of Range response.
+                        // Previously Math.min(response.byteLength, bytes) silently accepted
+                        // short reads — a partial/corrupted response would produce wrong data
+                        // (and ZSTD corruption downstream) instead of a clear error.
+                        const expectedLength = bytes;
+                        if (xhr.status !== 206) {
                             throw new Error(
-                                `Range request for ${file.dataUrl} did returned non-success status: ${xhr.status} "${xhr.statusText}"`,
+                                `Range request for ${file.dataUrl} returned ${xhr.status} (expected 206) ` +
+                                `range=bytes=${location}-${location + bytes - 1}`,
                             );
                         }
+                        if (xhr.response.byteLength !== expectedLength) {
+                            throw new Error(
+                                `Short range response for ${file.dataUrl}: ` +
+                                `expected ${expectedLength} bytes, got ${xhr.response.byteLength} ` +
+                                `range=bytes=${location}-${location + bytes - 1}`,
+                            );
+                        }
+                        const contentRange = xhr.getResponseHeader('Content-Range');
+                        if (contentRange) {
+                            const expectedPrefix = `bytes ${location}-${location + bytes - 1}/`;
+                            if (!contentRange.startsWith(expectedPrefix)) {
+                                throw new Error(
+                                    `Content-Range mismatch for ${file.dataUrl}: ` +
+                                    `expected prefix '${expectedPrefix}', got '${contentRange}'`,
+                                );
+                            }
+                        }
+
+                        const src = new Uint8Array(xhr.response, 0, bytes);
+                        mod.HEAPU8.set(src, buf);
+                        return src.byteLength;
                     } catch (e) {
                         console.log(e);
                         throw new Error(`Range request for ${file.dataUrl} failed with error: ${e}"`);

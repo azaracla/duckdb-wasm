@@ -195,27 +195,22 @@ static WebFileSystem *WEBFS = nullptr;
 WebFileSystem *WebFileSystem::Get() { return WEBFS; }
 
 /// Resolve readahead
+/// Fix: removed caching on readahead_ member — the first thread to resolve
+/// would set readahead_ and all subsequent threads (even with different tids)
+/// would reuse the same ReadAheadBuffer, sharing non-thread-safe mutable state
+/// (read heads, offsets, buffers, splice operations) without a mutex.
 ReadAheadBuffer *WebFileSystem::WebFileHandle::ResolveReadAheadBuffer(std::shared_lock<SharedMutex> &file_guard) {
-    auto tid = GetThreadID();
-
-    // Already resolved?
-    if (readahead_) return readahead_;
-    // Check global readahead buffers
+    const auto tid = GetThreadID();
     auto &fs = file_->GetFileSystem();
     std::unique_lock<LightMutex> fs_guard{fs.fs_mutex_};
-    // Registered in the meantime
-    if (readahead_) return readahead_;
 
-    // Already known?
     auto iter = fs.readahead_buffers_.find(tid);
     if (iter != fs.readahead_buffers_.end()) return iter->second.get();
 
-    // Create new readahead buffer
-    auto ra = std::make_unique<ReadAheadBuffer>();
-    auto ra_ptr = ra.get();
-    fs.readahead_buffers_.insert({tid, std::move(ra)});
-    readahead_ = ra_ptr;
-    return readahead_;
+    auto buffer = std::make_unique<ReadAheadBuffer>();
+    auto *result = buffer.get();
+    fs.readahead_buffers_.insert({tid, std::move(buffer)});
+    return result;
 }
 
 static inline bool hasPrefix(std::string_view text, std::string_view prefix) {
@@ -737,81 +732,75 @@ duckdb::unique_ptr<duckdb::FileHandle> WebFileSystem::OpenFile(const string &url
     return handle;
 }
 
-void WebFileSystem::Read(duckdb::FileHandle &handle, void *buffer, int64_t nr_bytes, duckdb::idx_t location) {
-    auto &file_hdl = static_cast<WebFileHandle &>(handle);
-    auto file_size = file_hdl.file_->file_size_;
-    auto reader = static_cast<char *>(buffer);
-    file_hdl.position_ = location;
-    while (nr_bytes > 0 && location < file_size) {
-        auto n = Read(handle, reader, nr_bytes);
-        reader += n;
-        nr_bytes -= n;
+// Fix: ReadAt performs a read at an explicit offset WITHOUT touching file_hdl.position_.
+// This is critical for thread safety: concurrent positional reads on the same FileHandle
+// (e.g. multiple pthread workers scanning the same Parquet file) must not race on position_.
+int64_t WebFileSystem::ReadAt(WebFileHandle &file_hdl, void *buffer, int64_t nr_bytes, duckdb::idx_t location) {
+    auto &file = *file_hdl.file_;
+    std::shared_lock<SharedMutex> file_guard{file.file_mutex_};
+
+    switch (file.data_protocol_) {
+        case DataProtocol::BUFFER: {
+            const auto file_size = file.data_buffer_->Size();
+            const auto safe_offset = std::min<duckdb::idx_t>(location, file_size);
+            const auto bytes_to_read = std::min<int64_t>(nr_bytes, file_size - safe_offset);
+            std::memcpy(buffer, file.data_buffer_->Get().data() + safe_offset, bytes_to_read);
+            if (file.file_stats_) {
+                file.file_stats_->RegisterFileReadCached(safe_offset, bytes_to_read);
+            }
+            return bytes_to_read;
+        }
+
+        case DataProtocol::HTTP:
+        case DataProtocol::S3: {
+            auto *readahead = file_hdl.ResolveReadAheadBuffer(file_guard);
+            auto reader = [&](auto *out, size_t n, duckdb::idx_t ofs) {
+                return duckdb_web_fs_file_read(file.file_id_, out, n, ofs);
+            };
+            return readahead->Read(file.file_id_, file.file_size_.value_or(0), buffer, nr_bytes, location,
+                                   reader, file.file_stats_.get());
+        }
+
+        default: {
+            auto n = duckdb_web_fs_file_read(file.file_id_, buffer, nr_bytes, location);
+            if (file.file_stats_) {
+                file.file_stats_->RegisterFileReadCold(location, n);
+            }
+            return n;
+        }
     }
 }
 
+// Positional read: loops on ReadAt with a local offset, never touches position_.
+void WebFileSystem::Read(duckdb::FileHandle &handle, void *buffer, int64_t nr_bytes, duckdb::idx_t location) {
+    auto &file_hdl = static_cast<WebFileHandle &>(handle);
+    auto *output = static_cast<char *>(buffer);
+    auto offset = location;
+
+    while (nr_bytes > 0) {
+        const auto bytes_read = ReadAt(file_hdl, output, nr_bytes, offset);
+        if (bytes_read <= 0) {
+            throw IOException(
+                "Short read at offset %llu",
+                static_cast<unsigned long long>(offset));
+        }
+        output += bytes_read;
+        offset += bytes_read;
+        nr_bytes -= bytes_read;
+    }
+}
+
+// Sequential read: delegates to ReadAt with the current position, then advances.
 int64_t WebFileSystem::Read(duckdb::FileHandle &handle, void *buffer, int64_t nr_bytes) {
     DEBUG_TRACE();
     assert(nr_bytes < std::numeric_limits<size_t>::max());
-    // Get the file handle
     auto &file_hdl = static_cast<WebFileHandle &>(handle);
     assert(file_hdl.file_);
-    auto &file = *file_hdl.file_;
-    // Read with shared lock to protect against truncation
-    std::shared_lock<SharedMutex> file_guard{file.file_mutex_};
-    // Perform the actual read
-    switch (file.data_protocol_) {
-        // Read buffers directly from WASM memory
-        case DataProtocol::BUFFER: {
-            auto file_size = file.data_buffer_->Size();
-            auto n = std::min<size_t>(nr_bytes, file_size - std::min<size_t>(file_hdl.position_, file_size));
-            ::memcpy(buffer, file.data_buffer_->Get().data() + file_hdl.position_, n);
-            // Register read
-            if (file.file_stats_) {
-                file.file_stats_->RegisterFileReadCached(file_hdl.position_, n);
-            }
-            // Update position
-            file_hdl.position_ += n;
-            return n;
-        }
 
-        // Just read with the filesystem api
-        case DataProtocol::NODE_FS:
-        case DataProtocol::BROWSER_FILEREADER:
-        case DataProtocol::BROWSER_FSACCESS: {
-            auto n = duckdb_web_fs_file_read(file.file_id_, buffer, nr_bytes, file_hdl.position_);
-            // Register read
-            if (file.file_stats_) {
-                file.file_stats_->RegisterFileReadCold(file_hdl.position_, n);
-            }
-            // Update position
-            file_hdl.position_ += n;
-            return n;
-        }
-
-        // Try to read read with readahead
-        case DataProtocol::HTTP:
-        case DataProtocol::S3: {
-            if (auto ra = file_hdl.ResolveReadAheadBuffer(file_guard)) {
-                auto reader = [&](auto *out, size_t n, duckdb::idx_t ofs) {
-                    return duckdb_web_fs_file_read(file.file_id_, out, n, ofs);
-                };
-                auto n = ra->Read(file.file_id_, file.file_size_.value_or(0), buffer, nr_bytes, file_hdl.position_,
-                                  reader, file.file_stats_.get());
-                file_hdl.position_ += n;
-                return n;
-            } else {
-                auto n = duckdb_web_fs_file_read(file.file_id_, buffer, nr_bytes, file_hdl.position_);
-                // Register read
-                if (file.file_stats_) {
-                    file.file_stats_->RegisterFileReadCold(file_hdl.position_, n);
-                }
-                // Update position
-                file_hdl.position_ += n;
-                return n;
-            }
-        }
-    }
-    return 0;
+    const auto offset = file_hdl.position_.load();
+    const auto bytes_read = ReadAt(file_hdl, buffer, nr_bytes, offset);
+    file_hdl.position_.store(offset + bytes_read);
+    return bytes_read;
 }
 
 void WebFileSystem::Write(duckdb::FileHandle &handle, void *buffer, int64_t nr_bytes, duckdb::idx_t location) {

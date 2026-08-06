@@ -233,6 +233,10 @@ class WebFileSystem : public duckdb::FileSystem {
     /// Open a file
     duckdb::unique_ptr<duckdb::FileHandle> OpenFile(const string &url, FileOpenFlags flags,
                                                     optional_ptr<FileOpener> opener = nullptr) override;
+    /// Thread-safe read at an explicit offset — never touches file_hdl.position_.
+    /// Used by both positional Read() and sequential Read(). Critical for pthread
+    /// safety: concurrent workers on the same file handle must not race on position_.
+    int64_t ReadAt(WebFileHandle &file_hdl, void *buffer, int64_t nr_bytes, duckdb::idx_t location);
     /// Read exactly nr_bytes from the specified location in the file. Fails if nr_bytes could not be read. This is
     /// equivalent to calling SetFilePointer(location) followed by calling Read().
     void Read(duckdb::FileHandle &handle, void *buffer, int64_t nr_bytes, duckdb::idx_t location) override;
