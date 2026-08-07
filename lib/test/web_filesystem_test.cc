@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <sstream>
 
+#include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/web/extensions/parquet_extension.h"
@@ -104,7 +105,7 @@ TEST(WebFileSystemTest, ReadAtDoesNotModifyPosition) {
     ASSERT_TRUE(db->RegisterFileBuffer("test_readat.bin", std::move(data), kSize).ok());
 
     // Open a file handle
-    auto handle = db->filesystem().OpenFile("test_readat.bin", FileOpenFlags::FILE_FLAGS_READ);
+    auto handle = db->filesystem().OpenFile("test_readat.bin", duckdb::FileFlags::FILE_FLAGS_READ);
     ASSERT_TRUE(handle != nullptr);
 
     // Set position to 42
@@ -133,7 +134,7 @@ TEST(WebFileSystemTest, SequentialReadAdvancesPosition) {
     for (size_t i = 0; i < kSize; ++i) data[i] = static_cast<char>(i & 0xFF);
     ASSERT_TRUE(db->RegisterFileBuffer("test_seq.bin", std::move(data), kSize).ok());
 
-    auto handle = db->filesystem().OpenFile("test_seq.bin", FileOpenFlags::FILE_FLAGS_READ);
+    auto handle = db->filesystem().OpenFile("test_seq.bin", duckdb::FileFlags::FILE_FLAGS_READ);
     ASSERT_TRUE(handle != nullptr);
 
     db->filesystem().Seek(*handle, 0);
@@ -162,7 +163,7 @@ TEST(WebFileSystemTest, PositionalReadAtDistinctOffsets) {
     for (size_t i = 0; i < kSize; ++i) data[i] = static_cast<char>((i * 7) & 0xFF);
     ASSERT_TRUE(db->RegisterFileBuffer("test_pos.bin", std::move(data), kSize).ok());
 
-    auto handle = db->filesystem().OpenFile("test_pos.bin", FileOpenFlags::FILE_FLAGS_READ);
+    auto handle = db->filesystem().OpenFile("test_pos.bin", duckdb::FileFlags::FILE_FLAGS_READ);
     ASSERT_TRUE(handle != nullptr);
 
     // Verify initial position is 0
