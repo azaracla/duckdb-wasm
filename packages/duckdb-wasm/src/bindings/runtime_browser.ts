@@ -641,7 +641,34 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         }
                         xhr.responseType = 'arraybuffer';
                         xhr.setRequestHeader('Range', `bytes=${location}-${location + bytes - 1}`);
+
+                        // Instrumentation: measure Range request concurrency
+                        const g = globalThis as any;
+                        const workerId =
+                            g.__duckdbRangeWorkerId ??=
+                                Math.random().toString(36).slice(2, 8);
+                        const t0 = performance.now();
+                        console.log('[range:start]', {
+                            workerId,
+                            url: file.dataUrl!.slice(-40),
+                            location,
+                            bytes,
+                            t0,
+                        });
                         xhr.send(null);
+                        const t1 = performance.now();
+                        console.log('[range:end]', {
+                            workerId,
+                            url: file.dataUrl!.slice(-40),
+                            location,
+                            bytes,
+                            status: xhr.status,
+                            responseBytes: xhr.response?.byteLength,
+                            contentRange: xhr.getResponseHeader('Content-Range'),
+                            t0,
+                            t1,
+                            duration: t1 - t0,
+                        });
 
                         // Fix #4: strict validation of Range response.
                         // A Content-Range header is REQUIRED for all 206 responses.
