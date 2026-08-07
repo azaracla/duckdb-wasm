@@ -791,6 +791,15 @@ void WebFileSystem::Read(duckdb::FileHandle &handle, void *buffer, int64_t nr_by
 }
 
 // Sequential read: delegates to ReadAt with the current position, then advances.
+//
+// NOTE: concurrent sequential reads on the SAME handle are NOT supported. Although
+// position_ is std::atomic (no C++ data race), the load->ReadAt->store sequence is not
+// an atomic cursor operation. Two threads can both load the same offset, read overlapping
+// bytes, and store the same end position — producing duplicate data downstream.
+//
+// For concurrent reads from multiple workers, use the positional Read(location) which
+// reads at an explicit offset and never touches position_. DuckDB's default scan path
+// uses positional reads and is safe.
 int64_t WebFileSystem::Read(duckdb::FileHandle &handle, void *buffer, int64_t nr_bytes) {
     DEBUG_TRACE();
     assert(nr_bytes < std::numeric_limits<size_t>::max());

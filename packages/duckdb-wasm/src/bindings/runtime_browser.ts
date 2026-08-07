@@ -613,10 +613,15 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
         try {
             // Fix #5: avoid calling getFileInfo() on every read — it triggers a WASM
             // round-trip through the global WASMResponseBuffer (race-prone with pthreads).
-            // File info is stable for HTTP/S3 files after open; use the cache directly.
-            const file = BROWSER_RUNTIME._fileInfoCache.get(fileId);
+            // File info is stable for HTTP/S3 files after open; use the cache.
+            // In pthread builds, each worker has its own JS runtime and _fileInfoCache.
+            // A read can land on a worker that did not execute openFile() — lazy-fill
+            // the local cache via getFileInfo() in that case. WASMResponseBuffer is now
+            // thread_local so this fallback is safe.
+            const file = BROWSER_RUNTIME._fileInfoCache.get(fileId) ??
+                         BROWSER_RUNTIME.getFileInfo(mod, fileId);
             if (!file) {
-                throw new Error(`File info not cached for fileId ${fileId} — openFile must be called first`);
+                throw new Error(`File info not available for fileId ${fileId}`);
             }
             switch (file?.dataProtocol) {
                 // File reading from BLOB or HTTP MUST be done with range requests.
@@ -639,32 +644,22 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         xhr.send(null);
 
                         // Fix #4: strict validation of Range response.
-                        // Previously Math.min(response.byteLength, bytes) silently accepted
-                        // short reads — a partial/corrupted response would produce wrong data
-                        // (and ZSTD corruption downstream) instead of a clear error.
-                        const expectedLength = bytes;
-                        if (xhr.status !== 206) {
-                            throw new Error(
-                                `Range request for ${file.dataUrl} returned ${xhr.status} (expected 206) ` +
-                                `range=bytes=${location}-${location + bytes - 1}`,
-                            );
-                        }
-                        if (xhr.response.byteLength !== expectedLength) {
-                            throw new Error(
-                                `Short range response for ${file.dataUrl}: ` +
-                                `expected ${expectedLength} bytes, got ${xhr.response.byteLength} ` +
-                                `range=bytes=${location}-${location + bytes - 1}`,
-                            );
-                        }
+                        // A Content-Range header is REQUIRED for all 206 responses.
+                        // CORS setup MUST include:
+                        //   Access-Control-Expose-Headers: Content-Range
                         const contentRange = xhr.getResponseHeader('Content-Range');
-                        if (contentRange) {
-                            const expectedPrefix = `bytes ${location}-${location + bytes - 1}/`;
-                            if (!contentRange.startsWith(expectedPrefix)) {
-                                throw new Error(
-                                    `Content-Range mismatch for ${file.dataUrl}: ` +
-                                    `expected prefix '${expectedPrefix}', got '${contentRange}'`,
-                                );
-                            }
+                        if (!contentRange) {
+                            throw new Error(
+                                `Missing Content-Range header for ${file.dataUrl}. ` +
+                                `Ensure the server exposes Content-Range via Access-Control-Expose-Headers.`,
+                            );
+                        }
+                        const expectedPrefix = `bytes ${location}-${location + bytes - 1}/`;
+                        if (!contentRange.startsWith(expectedPrefix)) {
+                            throw new Error(
+                                `Content-Range mismatch for ${file.dataUrl}: ` +
+                                `expected prefix '${expectedPrefix}', got '${contentRange}'`,
+                            );
                         }
 
                         const src = new Uint8Array(xhr.response, 0, bytes);

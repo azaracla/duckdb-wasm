@@ -123,8 +123,6 @@ class WebFileSystem : public duckdb::FileSystem {
        protected:
         /// The file
         std::shared_ptr<WebFile> file_;
-        /// The readahead (if resolved)
-        ReadAheadBuffer *readahead_;
         /// The position
         std::atomic<uint64_t> position_;
 
@@ -136,7 +134,6 @@ class WebFileSystem : public duckdb::FileSystem {
         WebFileHandle(std::shared_ptr<WebFile> file)
             : duckdb::FileHandle(file->GetFileSystem(), file->GetFileName(), FileOpenFlags::FILE_FLAGS_READ),
               file_(file),
-              readahead_(nullptr),
               position_(0) {
             ++file_->handle_count_;
         }
