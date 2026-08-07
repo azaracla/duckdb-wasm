@@ -82,7 +82,11 @@ void WASMResponseBuffer::Store(WASMResponse& response, arrow::Result<size_t> res
 
 /// Get the instance
 WASMResponseBuffer& WASMResponseBuffer::Get() {
-    static WASMResponseBuffer buffer = {};
+    // Fix: use thread_local to avoid races between pthread workers.
+    // Previously this was a global singleton — two threads could write
+    // different strings, then read each other's pointers → JSON.parse
+    // on empty/truncated data.
+    static thread_local WASMResponseBuffer buffer = {};
     return buffer;
 }
 

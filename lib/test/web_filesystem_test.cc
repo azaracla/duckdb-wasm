@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <sstream>
 
+#include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/web/extensions/parquet_extension.h"
@@ -91,6 +92,99 @@ TEST(WebFileSystemTest, TestExport) {
     ASSERT_TRUE(result.ok()) << result.status().message();
     result = conn.RunQuery("EXPORT DATABASE '/tmp/duckdbexport'");
     ASSERT_TRUE(result.ok()) << result.status().message();
+}
+
+TEST(WebFileSystemTest, ReadAtDoesNotModifyPosition) {
+    auto db = std::make_shared<WebDB>(WEB);
+    WebDB::Connection conn{*db};
+
+    // Register a file buffer with known content
+    constexpr size_t kSize = 1024;
+    auto data = std::make_unique<char[]>(kSize);
+    for (size_t i = 0; i < kSize; ++i) data[i] = static_cast<char>(i & 0xFF);
+    ASSERT_TRUE(db->RegisterFileBuffer("test_readat.bin", std::move(data), kSize).ok());
+
+    // Open a file handle
+    auto handle = db->filesystem().OpenFile("test_readat.bin", duckdb::FileFlags::FILE_FLAGS_READ);
+    ASSERT_TRUE(handle != nullptr);
+
+    // Set position to 42
+    db->filesystem().Seek(*handle, 42);
+    ASSERT_EQ(db->filesystem().SeekPosition(*handle), 42);
+
+    // Read at offset 100 (positional — should NOT change position_)
+    char buf[50];
+    db->filesystem().Read(*handle, buf, sizeof(buf), 100);
+    ASSERT_EQ(db->filesystem().SeekPosition(*handle), 42)
+        << "Read(location) must not modify the file handle position";
+
+    // Verify read data
+    for (size_t i = 0; i < sizeof(buf); ++i) {
+        ASSERT_EQ(static_cast<unsigned char>(buf[i]), static_cast<unsigned char>((100 + i) & 0xFF))
+            << "Data mismatch at offset " << i;
+    }
+}
+
+TEST(WebFileSystemTest, SequentialReadAdvancesPosition) {
+    auto db = std::make_shared<WebDB>(WEB);
+    WebDB::Connection conn{*db};
+
+    constexpr size_t kSize = 1024;
+    auto data = std::make_unique<char[]>(kSize);
+    for (size_t i = 0; i < kSize; ++i) data[i] = static_cast<char>(i & 0xFF);
+    ASSERT_TRUE(db->RegisterFileBuffer("test_seq.bin", std::move(data), kSize).ok());
+
+    auto handle = db->filesystem().OpenFile("test_seq.bin", duckdb::FileFlags::FILE_FLAGS_READ);
+    ASSERT_TRUE(handle != nullptr);
+
+    db->filesystem().Seek(*handle, 0);
+    ASSERT_EQ(db->filesystem().SeekPosition(*handle), 0);
+
+    // Sequential read of 100 bytes
+    char buf[100];
+    auto bytes_read = db->filesystem().Read(*handle, buf, sizeof(buf));
+    ASSERT_EQ(bytes_read, 100);
+    ASSERT_EQ(db->filesystem().SeekPosition(*handle), 100)
+        << "Sequential Read must advance position by bytes_read";
+
+    // Second sequential read continues from position 100
+    bytes_read = db->filesystem().Read(*handle, buf, 50);
+    ASSERT_EQ(bytes_read, 50);
+    ASSERT_EQ(db->filesystem().SeekPosition(*handle), 150)
+        << "Second sequential Read must advance position to 150";
+}
+
+TEST(WebFileSystemTest, PositionalReadAtDistinctOffsets) {
+    auto db = std::make_shared<WebDB>(WEB);
+    WebDB::Connection conn{*db};
+
+    constexpr size_t kSize = 512;
+    auto data = std::make_unique<char[]>(kSize);
+    for (size_t i = 0; i < kSize; ++i) data[i] = static_cast<char>((i * 7) & 0xFF);
+    ASSERT_TRUE(db->RegisterFileBuffer("test_pos.bin", std::move(data), kSize).ok());
+
+    auto handle = db->filesystem().OpenFile("test_pos.bin", duckdb::FileFlags::FILE_FLAGS_READ);
+    ASSERT_TRUE(handle != nullptr);
+
+    // Verify initial position is 0
+    ASSERT_EQ(db->filesystem().SeekPosition(*handle), 0);
+
+    // Read 10 bytes at offset 0
+    char buf1[10];
+    db->filesystem().Read(*handle, buf1, sizeof(buf1), 0);
+    for (size_t i = 0; i < sizeof(buf1); ++i) {
+        ASSERT_EQ(static_cast<unsigned char>(buf1[i]), static_cast<unsigned char>((i * 7) & 0xFF));
+    }
+
+    // Read 10 bytes at offset 300 (non-overlapping)
+    char buf2[10];
+    db->filesystem().Read(*handle, buf2, sizeof(buf2), 300);
+    for (size_t i = 0; i < sizeof(buf2); ++i) {
+        ASSERT_EQ(static_cast<unsigned char>(buf2[i]), static_cast<unsigned char>(((300 + i) * 7) & 0xFF));
+    }
+
+    // Position should be unchanged (positional reads don't touch it)
+    ASSERT_EQ(db->filesystem().SeekPosition(*handle), 0);
 }
 
 }  // namespace

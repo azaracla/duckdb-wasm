@@ -611,7 +611,18 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
             return 0;
         }
         try {
-            const file = BROWSER_RUNTIME.getFileInfo(mod, fileId);
+            // Fix #5: avoid calling getFileInfo() on every read — it triggers a WASM
+            // round-trip through the global WASMResponseBuffer (race-prone with pthreads).
+            // File info is stable for HTTP/S3 files after open; use the cache.
+            // In pthread builds, each worker has its own JS runtime and _fileInfoCache.
+            // A read can land on a worker that did not execute openFile() — lazy-fill
+            // the local cache via getFileInfo() in that case. WASMResponseBuffer is now
+            // thread_local so this fallback is safe.
+            const file = BROWSER_RUNTIME._fileInfoCache.get(fileId) ??
+                         BROWSER_RUNTIME.getFileInfo(mod, fileId);
+            if (!file) {
+                throw new Error(`File info not available for fileId ${fileId}`);
+            }
             switch (file?.dataProtocol) {
                 // File reading from BLOB or HTTP MUST be done with range requests.
                 // We have to check in OPEN if such file supports range requests and upgrade to BUFFER if not.
@@ -630,32 +641,57 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         }
                         xhr.responseType = 'arraybuffer';
                         xhr.setRequestHeader('Range', `bytes=${location}-${location + bytes - 1}`);
+
+                        // Instrumentation: measure Range request concurrency
+                        const g = globalThis as any;
+                        const workerId =
+                            g.__duckdbRangeWorkerId ??=
+                                Math.random().toString(36).slice(2, 8);
+                        const t0 = performance.now();
+                        console.log('[range:start]', {
+                            workerId,
+                            url: file.dataUrl!.slice(-40),
+                            location,
+                            bytes,
+                            t0,
+                        });
                         xhr.send(null);
-                        if (
-                            xhr.status == 206 /* Partial content */ ||
-                            (xhr.status == 200 && bytes == xhr.response.byteLength && location == 0)
-                        ) {
-                            const src = new Uint8Array(xhr.response, 0, Math.min(xhr.response.byteLength, bytes));
-                            mod.HEAPU8.set(src, buf);
-                            return src.byteLength;
-                        } else if (xhr.status == 200) {
-                            // TODO: here we are actually throwing away all non-relevant bytes, but this is still better than failing
-                            //       proper solution would require notifying duckdb-wasm cache, while we are piggybackign on browser cache
-                            console.warn(
-                                `Range request for ${file.dataUrl} did not return a partial response: ${xhr.status} "${xhr.statusText}"`,
-                            );
-                            const src = new Uint8Array(
-                                xhr.response,
-                                location,
-                                Math.min(xhr.response.byteLength - location, bytes),
-                            );
-                            mod.HEAPU8.set(src, buf);
-                            return src.byteLength;
-                        } else {
+                        const t1 = performance.now();
+                        console.log('[range:end]', {
+                            workerId,
+                            url: file.dataUrl!.slice(-40),
+                            location,
+                            bytes,
+                            status: xhr.status,
+                            responseBytes: xhr.response?.byteLength,
+                            contentRange: xhr.getResponseHeader('Content-Range'),
+                            t0,
+                            t1,
+                            duration: t1 - t0,
+                        });
+
+                        // Fix #4: strict validation of Range response.
+                        // A Content-Range header is REQUIRED for all 206 responses.
+                        // CORS setup MUST include:
+                        //   Access-Control-Expose-Headers: Content-Range
+                        const contentRange = xhr.getResponseHeader('Content-Range');
+                        if (!contentRange) {
                             throw new Error(
-                                `Range request for ${file.dataUrl} did returned non-success status: ${xhr.status} "${xhr.statusText}"`,
+                                `Missing Content-Range header for ${file.dataUrl}. ` +
+                                `Ensure the server exposes Content-Range via Access-Control-Expose-Headers.`,
                             );
                         }
+                        const expectedPrefix = `bytes ${location}-${location + bytes - 1}/`;
+                        if (!contentRange.startsWith(expectedPrefix)) {
+                            throw new Error(
+                                `Content-Range mismatch for ${file.dataUrl}: ` +
+                                `expected prefix '${expectedPrefix}', got '${contentRange}'`,
+                            );
+                        }
+
+                        const src = new Uint8Array(xhr.response, 0, bytes);
+                        mod.HEAPU8.set(src, buf);
+                        return src.byteLength;
                     } catch (e) {
                         console.log(e);
                         throw new Error(`Range request for ${file.dataUrl} failed with error: ${e}"`);
