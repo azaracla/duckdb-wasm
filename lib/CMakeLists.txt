@@ -83,7 +83,7 @@ set(DUCKDB_PLATFORM "wasm_mvp")
 
 if(EMSCRIPTEN)
   # Bump stack size from default 64KB to 1MB
-  set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -sSTACK_SIZE=1048576")
+  set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -sTOTAL_STACK=1048576")
   # Release build
   if(CMAKE_BUILD_TYPE STREQUAL "Release")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DNDEBUG")
@@ -154,7 +154,7 @@ endif()
 if (DUCKDB_WASM_LOADABLE_EXTENSIONS)
   set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -s FILESYSTEM=1 -s ENVIRONMENT='web,node,worker' -s ALLOW_TABLE_GROWTH -lembind")
 
-  if ($ENV{USE_GENERATED_EXPORTED_LIST} STREQUAL "yes")
+  if ("$ENV{USE_GENERATED_EXPORTED_LIST}" STREQUAL "yes")
     set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -s MAIN_MODULE=2 -s EXPORTED_FUNCTIONS='@exported_list.txt'")
   else()
     set(WASM_LINK_FLAGS "${WASM_LINK_FLAGS} -s MAIN_MODULE=1 -s EXPORTED_FUNCTIONS='@../../../lib/base_exported_list.txt'")
