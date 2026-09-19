@@ -1,30 +1,36 @@
-# DuckDB 2.0 alpha COI: first real compiler feedback
+# DuckDB 2.0 alpha COI: compiler feedback and corrective iterations
 
 2026-09-19. Experimental branch `feat/duckdb-2dev-async-http` only; no AIS production changes.
 
-## Build #1: failure diagnosed
+## Build #1: pinned core compile failure
 
-- GitHub Actions run: https://github.com/azaracla/duckdb-wasm/actions/runs/35455183027
-- The pinned DuckDB submodule `43f897e5f3446bde2b36cef5dc137eea14211fd9` and the four guarded wrapper API substitutions were checked successfully in the runner.
-- Emscripten 3.1.57 built DuckDB until about 35%, then `submodules/duckdb/src/main/extension/extension_load.cpp:495` failed with `use of undeclared identifier 'config'` in the `WASM_LOADABLE_EXTENSIONS` code path.
-- The pin's `ExtensionHelper::ExtensionUrlTemplate` API takes `(optional_ptr<const DatabaseInstance>, const ExtensionRepository &, const string &)`, not the older `(config, version)` invocation. The pin exposes `ExtensionRepository::GetDefaultRepository(optional_ptr<DBConfig>)`.
-- This is a concrete *core API compile failure*, not evidence of HTTP Range serialization, runtime deadlock or DuckLake behavior.
+- Run: https://github.com/azaracla/duckdb-wasm/actions/runs/35455183027
+- The DuckDB gitlink `43f897e5f3446bde2b36cef5dc137eea14211fd9` and guarded wrapper API substitutions passed.
+- With Emscripten 3.1.57, the pinned core reached approximately 35%, then `src/main/extension/extension_load.cpp:495` failed because `config` no longer exists in the WASM-loadable-extension path.
+- `tools/async-io/patch_core_alpha.py` performs one guarded, idempotent replacement using `ExtensionRepository::GetDefaultRepository(&db.config)` and the new `ExtensionUrlTemplate(db, repository, "")` API. It runs in the disposable checkout without advancing the pinned DuckDB submodule or changing signature policy.
+- Its four Python regression tests passed in the fast CI. This does not demonstrate extension compatibility or a functioning browser runtime.
 
-## Narrow fix (build #2)
+## Build #2: core succeeded, wrapper compile failure
 
-- `tools/async-io/patch_core_alpha.py` verifies the DuckDB git HEAD is the exact pinned commit and replaces only the obsolete `ExtensionUrlTemplate(&config, "")` call with the default repository from `db.config` and `ExtensionUrlTemplate(db, repository, "")`.
-- The helper is strict and idempotent: missing, duplicate or mixed source fragments abort instead of silently editing unexpected revisions. `--check` fails if the patch has not been applied.
-- The core remains at its immutable Git submodule commit; the fix is applied only to the disposable Actions checkout after `git submodule update` and before CMake.
-- This patch does **not** import the Serverless EH-only/Quack workaround, replace the extension loader, bypass signature verification, turn off COI threads or change the HTTP filesystem.
-- The COI workflow now uses `actions/cache@v4` with `save-always: true` to keep already compiled objects even when the first attempt fails; previous failed builds did not save ccache.
-- Offline tests for the core patch are picked up by `.github/workflows/duckdb-2dev-fast.yml` via `test_*.py`.
-- Second build run: https://github.com/azaracla/duckdb-wasm/actions/runs/35457036312. Its success and any subsequent diagnostics must be read from the Actions run; this note does not assert that the WASM runtime compiles or boots.
+- Run: https://github.com/azaracla/duckdb-wasm/actions/runs/35457036312
+- The pinned core passed its build and install step, including the static libraries and installed headers. This is a **core-only compilation success**, not a linked WASM runtime.
+- The wrapper then failed at `lib/src/json_dataview.cc:144` with `no member named 'get' in 'duckdb::Vector` because DuckDB 2 alpha's struct children are direct `Vector` objects.
+- Source fix `b6ca5a00d6f385927ee506bc655b463ca12c4e72`: use `&entry` instead of `entry.get()` in the post-order traversal, and replace deprecated `vec->Flatten(chunk.size())` with `vec->Flatten()`.
+- The fast check workflow passed for that change. C++ compilation is validated only by a subsequent COI build.
 
-## Acceptance gates (unchanged)
+## Build throughput and reproducibility
 
-1. Core + wrapper compile and link successfully; `duckdb-coi.js`, `.wasm`, `.pthread.js` exist and are nonempty.
-2. A COI browser smoke test runs `SELECT 42`, checks the pinned runtime version and verifies query results at 1/2/4 threads without deadlocks.
-3. Build and load DuckLake against the *same* DuckDB core, then test the public AIS catalogue read-only.
-4. Prove concurrent, validated HTTP 206 Range reads within DuckDB (not merely within an independent four-worker test), followed by cold/warm AIS benchmarks.
+- `40ab6b02dd333c6e3bda74b4d3f1e13302517926` propagates C and C++ compiler launchers into DuckDB's **separate ExternalProject CMake cache**. Previously, `ccache` was configured only on the wrapper, which did not cover core C++ compilation.
+- GitHub Actions warns that `actions/cache@v4` with `save-always: true` does not save on a failed job. `7d6eb11fef1ae45caa8dce33b8d544aa12a7308f` instead uses `actions/cache/restore@v4` and an explicit `actions/cache/save@v4` step guarded by `always()` and `cache-hit != 'true'`. The actual cache upload and hit rate still require verification from run logs.
+- The CI still builds only the `wasm_threads`/COI runtime, with the same pinned DuckDB alpha and Emscripten 3.1.57. Its compile log is uploaded on failures and outputs are uploaded only on success.
+- The latest COI run for the cache changes is https://github.com/azaracla/duckdb-wasm/actions/runs/35470141243. Inspect its **actual result**; this document makes no claim of build or runtime success for it.
 
-The wrapper API changes in `tools/async-io/port_api.py` still run as a source-checked CI migration, not yet as committed wrapper C++ modifications; do not describe them as completed source integration.
+## Next acceptance gates
+
+1. Compile and link the wrapper. Check all three non-empty `duckdb-coi.js`, `duckdb-coi.wasm`, `duckdb-coi.pthread.js` outputs; inspect log artifacts on failure.
+2. Commit the guarded wrapper API migration as actual C++ source changes, then switch CI from `port_api.py --apply` to `--check` only. Keep the upstream core patch separate from the pinned gitlink.
+3. Browser smoke tests: `SELECT 42`, version identification, 1/2/4 threads without deadlock.
+4. Rebuild DuckLake against this exact alpha, load it and attach the AIS public catalogue read-only.
+5. Measure genuine overlapping HTTP 206 Range reads from **DuckDB itself**, then cold/warm AIS performance and output equivalence.
+
+The experimental branch is not deployable to AIS. Neither a successfully compiled core nor passing source-regression tests should be presented as a linked or booted browser runtime.
