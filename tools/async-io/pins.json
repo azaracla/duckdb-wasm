@@ -6,7 +6,9 @@
     "checked_on": "2026-09-19",
     "references": [
       "tools/wasm/Dockerfile",
-      "docker/duckdb/Dockerfile"
+      "docker/duckdb/Dockerfile",
+      "docker/duckdb/extensions.cmake",
+      "tools/wasm/extensions.cmake"
     ]
   },
   "duckdb": {
@@ -18,17 +20,20 @@
   "duckdb_wasm_wrapper": {
     "repository": "duckdb/duckdb-wasm",
     "reference_commit": "def100b4be91a8ba27d441914e496231695ba0a8",
-    "integration": "This fork's own source and filesystem-race fixes are authoritative; port 2.0 APIs onto them rather than replacing the fork."
+    "integration": "This fork's source and filesystem-race fixes are authoritative; port 2.0 APIs onto them rather than replacing the fork."
   },
   "emscripten": "3.1.57",
   "target": "wasm_threads/coi",
   "ducklake": {
-    "ref": null,
-    "status": "BLOCKED: choose a 2.0-alpha-compatible exact revision; AIS 8736cb23 pins DuckDB v1.5.3 and must not be reused"
+    "repository": "duckdb/ducklake",
+    "candidate_ref": "eb7b95df82fc3ba0ace777e34ef1c81280477042",
+    "upstream_duckdb_version_file": "c97bd8b96e0481b9e58d491f4fcd8599fccd65fb",
+    "status": "CANDIDATE ONLY: Serverless pins this DuckLake revision with APPLY_PATCHES for its native 2.0-alpha build. Its own duckdb-version is different from 43f897e5f3; compile explicitly against the pinned target and validate patches, source id, runtime load and browser queries before declaring WASM compatibility. AIS 8736cb23 pins v1.5.3 and must not be reused."
   },
   "httpfs": {
-    "serverless_reference": "66c62f0f9897cf7a6de9a79b0a2ad555ff00fa87",
-    "status": "Verify compatibility for local DuckLake WASM before pinning"
+    "native_serverless_ref": "984d576bc696248af5cc51f9ec4c2f2c8a9dbd1f",
+    "serverless_wasm_quack_ref": "66c62f0f9897cf7a6de9a79b0a2ad555ff00fa87",
+    "status": "Different native and Quack-WASM pins; verify DuckLake browser compatibility before selecting"
   },
   "wasm_runtime_build": "NOT_BUILT_ON_THIS_BRANCH",
   "browser_smoke": "NOT_RUN",
