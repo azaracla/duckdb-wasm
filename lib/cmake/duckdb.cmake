@@ -12,6 +12,32 @@ if(DUCKDB_LOCATION)
   set(DUCKDB_CORE_DIR ${DUCKDB_LOCATION})
 endif()
 
+# Keep this aligned with tools/async-io/pins.json and the Serverless Quack
+# Dockerfile. A checkout at a different submodule ref must fail at configure
+# time, not quietly produce a runtime incompatible with its extensions.
+# The check is specific to this experimental 2.0 browser port: native builds
+# of the upstream wrapper are intentionally unaffected.
+set(DUCKDB_ALPHA_COMMIT "43f897e5f3446bde2b36cef5dc137eea14211fd9")
+set(DUCKDB_ALPHA_SOURCE_ID "43f897e5f3")
+if(EMSCRIPTEN)
+  execute_process(
+    COMMAND git -C "${DUCKDB_CORE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE DUCKDB_CHECKED_OUT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE DUCKDB_GIT_STATUS)
+  if(NOT DUCKDB_GIT_STATUS EQUAL 0 OR
+     NOT DUCKDB_CHECKED_OUT_COMMIT STREQUAL DUCKDB_ALPHA_COMMIT)
+    message(FATAL_ERROR
+      "DuckDB alpha checkout mismatch: expected ${DUCKDB_ALPHA_COMMIT}, "
+      "got '${DUCKDB_CHECKED_OUT_COMMIT}'. Run git submodule update --init --recursive.")
+  endif()
+  # Git abbreviations vary between a shallow submodule and an extension's
+  # full checkout. Pass a stable id into DuckDB's ExternalProject explicitly.
+  set(DUCKDB_CORE_SOURCE_ID_ARGS "-DGIT_COMMIT_HASH=${DUCKDB_ALPHA_SOURCE_ID}")
+else()
+  set(DUCKDB_CORE_SOURCE_ID_ARGS "")
+endif()
+
 set(DUCKDB_CXX_FLAGS "${DUCKDB_CXX_FLAGS} -Wno-unqualified-std-cast-call -DDUCKDB_DEBUG_NO_SAFETY -DDUCKDB_FROM_DUCKDB_WASM")
 message("DUCKDB_CXX_FLAGS=${DUCKDB_CXX_FLAGS}")
 
@@ -30,6 +56,7 @@ ExternalProject_Add(
   PREFIX "${CMAKE_BINARY_DIR}/third_party/duckdb"
   INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/duckdb/install"
   CMAKE_ARGS -G${CMAKE_GENERATOR}
+             ${DUCKDB_CORE_SOURCE_ID_ARGS}
              -DCMAKE_CXX_STANDARD=17
              -DLOCAL_EXTENSION_REPO="../../build/extension_repository"
              -DCMAKE_CXX_FLAGS=${DUCKDB_CXX_FLAGS}
@@ -64,8 +91,7 @@ set(DUCKDB_SOURCE_DIR "${DUCKDB_CORE_DIR}")
 set(DUCKDB_INCLUDE_DIR "${install_dir}/include")
 set(DUCKDB_UTF8PROC_INCLUDE_DIR
     "${DUCKDB_SOURCE_DIR}/third_party/utf8proc/include")
-set(DUCKDB_RE2_INCLUDE_DIR
-    "${DUCKDB_SOURCE_DIR}/third_party/re2")
+set(DUCKDB_RE2_INCLUDE_DIR "${DUCKDB_SOURCE_DIR}/third_party/re2")
 set(DUCKDB_FMT_INCLUDE_DIR "${DUCKDB_SOURCE_DIR}/third_party/fmt/include")
 set(DUCKDB_LIBRARY_PATH "${install_dir}/lib/libduckdb_static.a")
 file(MAKE_DIRECTORY ${DUCKDB_INCLUDE_DIR})
