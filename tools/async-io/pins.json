@@ -1,0 +1,36 @@
+{
+  "purpose": "Experimental DuckDB 2.0 alpha COI/pthread + local DuckLake + concurrent HTTP Range; not a release manifest",
+  "source": {
+    "repository": "azaracla/serverless-quack-ducklake",
+    "branch": "dev",
+    "checked_on": "2026-09-19",
+    "references": [
+      "tools/wasm/Dockerfile",
+      "docker/duckdb/Dockerfile"
+    ]
+  },
+  "duckdb": {
+    "repository": "duckdb/duckdb",
+    "ref": "43f897e5f3446bde2b36cef5dc137eea14211fd9",
+    "source_id": "43f897e5f3",
+    "release_track": "2.0-alpha (pinned development commit, NOT a floating next branch or tagged stable release)"
+  },
+  "duckdb_wasm_wrapper": {
+    "repository": "duckdb/duckdb-wasm",
+    "reference_commit": "def100b4be91a8ba27d441914e496231695ba0a8",
+    "integration": "This fork's own source and filesystem-race fixes are authoritative; port 2.0 APIs onto them rather than replacing the fork."
+  },
+  "emscripten": "3.1.57",
+  "target": "wasm_threads/coi",
+  "ducklake": {
+    "ref": null,
+    "status": "BLOCKED: choose a 2.0-alpha-compatible exact revision; AIS 8736cb23 pins DuckDB v1.5.3 and must not be reused"
+  },
+  "httpfs": {
+    "serverless_reference": "66c62f0f9897cf7a6de9a79b0a2ad555ff00fa87",
+    "status": "Verify compatibility for local DuckLake WASM before pinning"
+  },
+  "wasm_runtime_build": "NOT_BUILT_ON_THIS_BRANCH",
+  "browser_smoke": "NOT_RUN",
+  "http_range_parallelism": "NOT_VERIFIED"
+}
