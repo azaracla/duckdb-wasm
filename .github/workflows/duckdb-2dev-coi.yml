@@ -79,15 +79,17 @@ jobs:
           npm install --global --no-audit --no-fund js-beautify@1.15.4
           emcc --version | head -n 1
 
-      - uses: actions/cache@v4
+      # The legacy actions/cache post-step does not save after a failed build.
+      # Restore/save separately so successive 2.0 compiler-error iterations
+      # reuse both the DuckDB ExternalProject and the WASM wrapper objects.
+      - name: Restore COI compiler cache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: alpha-coi-emsdk-3.1.57-${{ runner.os }}-${{ hashFiles('lib/**', 'scripts/wasm_build_lib.sh', 'tools/async-io/port_api.py', 'tools/async-io/patch_core_alpha.py') }}
           restore-keys: |
             alpha-coi-emsdk-3.1.57-${{ runner.os }}-
-          # The initial core build failed after ~35%; preserve already compiled
-          # objects even when a later C++ source fails, for the next iteration.
-          save-always: true
 
       - name: Build only the 2.0 COI runtime
         shell: bash
@@ -104,6 +106,13 @@ jobs:
             exit 1
           fi
           tail -n 40 build-coi.log
+
+      - name: Save compiler cache even after a failed build
+        if: always() && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
       - name: Assert expected COI outputs
         shell: bash
