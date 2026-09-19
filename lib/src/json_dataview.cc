@@ -91,7 +91,7 @@ arrow::Result<rapidjson::Value> CreateDataView(rapidjson::Document& doc, duckdb:
             desc.AddMember("physicalType", TypeIdToString(vec_type.InternalType()), allocator);
 
             // Create validity vector
-            vec->Flatten(chunk.size());
+            vec->Flatten();
             auto& validity = FlatVector::Validity(*vec);
             auto [validity_ptr, validity_idx] =
                 create_additional_buffer<uint8_t>(data_ptrs, additional_buffers, chunk.size());
@@ -141,7 +141,8 @@ arrow::Result<rapidjson::Value> CreateDataView(rapidjson::Document& doc, duckdb:
                         rapidjson::Value desc{rapidjson::kObjectType};
                         auto name = StructType::GetChildName(vec_type, c);
                         desc.AddMember("name", rapidjson::Value{name.GetIdentifierName(), allocator}, allocator);
-                        pending.push_back({false, entry.get(), std::move(desc), current_idx});
+                        // DuckDB 2 alpha stores child Vectors directly, not unique_ptrs.
+                        pending.push_back({false, &entry, std::move(desc), current_idx});
                     }
                     break;
                 }
