@@ -62,6 +62,10 @@ ExternalProject_Add(
              -DCMAKE_CXX_FLAGS=${DUCKDB_CXX_FLAGS}
              -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
              -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+             # ExternalProject has a separate CMake cache: propagate ccache
+             # launchers instead of caching only the small WASM wrapper.
+             -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
+             -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
              -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
              -DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
              -DCMAKE_BUILD_TYPE=${DUCKDB_BUILD_TYPE}
@@ -78,7 +82,6 @@ ExternalProject_Add(
     <INSTALL_DIR>/lib/libduckdb_static.a
     <INSTALL_DIR>/lib/libduckdb_fmt.a
     <INSTALL_DIR>/lib/libduckdb_utf8proc.a
-    <INSTALL_DIR>/lib/libduckdb_fastpforlib.a
     <INSTALL_DIR>/lib/libparquet_extension.a
     <INSTALL_DIR>/lib/libcore_functions_extension.a
     <INSTALL_DIR>/lib/libduckdb_generated_extension_loader.a
