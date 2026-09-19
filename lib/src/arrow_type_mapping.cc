@@ -1,4 +1,5 @@
 #include "duckdb/web/arrow_type_mapping.h"
+#include "duckdb/common/vector/flat_vector.hpp"
 
 #include "arrow/array/array_binary.h"
 #include "arrow/array/array_primitive.h"
@@ -83,7 +84,7 @@ arrow::Result<duckdb::LogicalType> mapArrowTypeToDuckDB(const arrow::DataType& t
             child_list_t<LogicalType> children;
             for (auto& field : type.fields()) {
                 ARROW_ASSIGN_OR_RAISE(auto t, mapArrowTypeToDuckDB(*field->type()));
-                children.push_back({field->name(), t});
+                children.push_back({Identifier(field->name()), t});
             }
             return duckdb::LogicalType::STRUCT(children);
         }
@@ -91,7 +92,7 @@ arrow::Result<duckdb::LogicalType> mapArrowTypeToDuckDB(const arrow::DataType& t
             child_list_t<LogicalType> children;
             for (auto& field : type.fields()) {
                 ARROW_ASSIGN_OR_RAISE(auto t, mapArrowTypeToDuckDB(*field->type()));
-                children.push_back({field->name(), t});
+                children.push_back({Identifier(field->name()), t});
             }
             return duckdb::LogicalType::STRUCT(children);
         }
@@ -99,7 +100,7 @@ arrow::Result<duckdb::LogicalType> mapArrowTypeToDuckDB(const arrow::DataType& t
             child_list_t<LogicalType> children;
             for (auto& field : type.fields()) {
                 ARROW_ASSIGN_OR_RAISE(auto t, mapArrowTypeToDuckDB(*field->type()));
-                children.push_back({field->name(), t});
+                children.push_back({Identifier(field->name()), t});
             }
             return duckdb::LogicalType::STRUCT(children);
         }
@@ -174,18 +175,20 @@ arrow::Status convertArrowArrayToDuckDBVector(arrow::Array& in, duckdb::Vector& 
     switch (in_type->id()) {
         // Map null
         case arrow::Type::type::NA:
-            out.Reference(Value());
+            out.Reference(Value(), count_t(in.length()));
             break;
 
-        // Arrow bitpacks booleans
+        // Arrow bitpacks booleans: expand the bits into DuckDB bool elements.
         case arrow::Type::type::BOOL: {
             auto& a = *dynamic_cast<const arrow::BooleanArray*>(&in);
-            if (out.GetType().id() == LogicalTypeId::BOOLEAN) {
-                return arrow::Status::ExecutionError("invalid boolean array");
+            if (out.GetType().id() != LogicalTypeId::BOOLEAN) {
+                return arrow::Status::ExecutionError("invalid boolean array destination");
             }
+            auto* values = FlatVector::GetDataMutable<bool>(out);
             for (size_t i = 0; i < a.length(); ++i) {
-                out.GetData()[i] = a.Value(i);
+                values[i] = a.Value(i);
             }
+            break;
         }
 
         // Store plain data pointer
@@ -204,18 +207,18 @@ arrow::Status convertArrowArrayToDuckDBVector(arrow::Array& in, duckdb::Vector& 
         case arrow::Type::type::TIME32:
         case arrow::Type::type::TIME64: {
             auto* data = reinterpret_cast<uint8_t*>(in.data()->buffers[1]->address());
-            duckdb::FlatVector::SetData(out, data);
+            duckdb::FlatVector::SetData(out, data, count_t(in.length()));
             break;
         }
 
-        // Manually convert string_t
+        // Own the strings in DuckDB rather than retaining Arrow view pointers.
         case arrow::Type::type::LARGE_STRING:
         case arrow::Type::type::STRING: {
             auto& a = *dynamic_cast<const arrow::StringArray*>(&in);
-            auto strings = FlatVector::GetData<string_t>(out);
+            auto strings = FlatVector::GetDataMutable<string_t>(out);
             for (size_t i = 0; i < a.length(); ++i) {
                 auto s = a.GetView(i);
-                strings[i] = string_t(s.data(), s.length());
+                strings[i] = StringVector::AddString(out, s.data(), s.length());
             }
             break;
         }
