@@ -47,5 +47,11 @@ jobs:
       - name: Python porting-script regression tests
         run: python3 -m unittest discover -s tools/async-io -p 'test_*.py' -v
 
+      - name: Validate WebDB C++ source migration (no compiler or submodules)
+        run: |
+          python3 tools/async-io/port_webdb_alpha.py --apply
+          python3 tools/async-io/port_webdb_alpha.py --check
+          git diff --check
+
       - name: HTTP Range overlap analyzer tests
         run: node --test tools/async-io/overlap.test.mjs
