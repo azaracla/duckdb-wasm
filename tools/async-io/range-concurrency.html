@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Independent HTTP Range concurrency baseline</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    input { width: min(100%, 730px); padding: .5rem; }
+    button { padding: .5rem 1rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #eee; padding: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Independent HTTP Range concurrency baseline</h1>
+  <p>Four separate Web Workers each issue one <code>XMLHttpRequest</code> in synchronous mode.
+     This tests browser transport capacity, <strong>not DuckDB's actual filesystem</strong>.
+     Only valid HTTP 206 responses with exact byte counts and Content-Range count toward overlap.
+     Results across workers use <code>performance.timeOrigin + performance.now()</code>.</p>
+  <label for="url">Public Range-capable URL (no credentials):</label><br>
+  <input id="url" value="/fixture.bin" autocomplete="off" spellcheck="false">
+  <button id="run" type="button">Run four reads</button>
+  <p>Serve this page with <code>python3 tools/async-io/range-server.py</code>, then open
+     <code>http://127.0.0.1:8765/range-concurrency.html</code>. For an external file,
+     ensure Range and CORS, including exposed Content-Range. Disable cache for cold-read tests.</p>
+  <pre id="result" role="status">Ready.</pre>
+  <script type="module">
+    import { summarizeRanges } from './overlap.mjs';
+
+    const button = document.getElementById('run');
+    const output = document.getElementById('result');
+    const input = document.getElementById('url');
+    const COUNT = 4;
+    const BYTES = 65536;
+    const workerSource = `
+      self.postMessage({ ready: true });
+      self.onmessage = ({ data }) => {
+        const { url, offset, bytes, workerId } = data;
+        const xhr = new XMLHttpRequest();
+        let error = null;
+        let status = 0;
+        let responseBytes = 0;
+        let contentRange = null;
+        const startMs = performance.timeOrigin + performance.now();
+        try {
+          xhr.open('GET', url, false);
+          xhr.responseType = 'arraybuffer';
+          xhr.setRequestHeader('Range', 'bytes=' + offset + '-' + (offset + bytes - 1));
+          xhr.send(null);
+          status = xhr.status;
+          responseBytes = xhr.response?.byteLength ?? 0;
+          contentRange = xhr.getResponseHeader('Content-Range');
+        } catch (e) {
+          error = String(e);
+        }
+        const endMs = performance.timeOrigin + performance.now();
+        self.postMessage({ workerId, offset, bytes, startMs, endMs, status, responseBytes, contentRange, error });
+      };
+    `;
+
+    button.addEventListener('click', () => {
+      let url;
+      try {
+        url = new URL(input.value, location.href);
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only HTTP(S) allowed');
+        if (url.username || url.password) throw new Error('Credentials in URL are not supported');
+      } catch (error) {
+        output.textContent = String(error);
+        return;
+      }
+      button.disabled = true;
+      output.textContent = 'Launching four synchronous XHRs...';
+      const objectUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
+      const workers = [];
+      const samples = [];
+      let ready = 0;
+      let done = 0;
+      let complete = false;
+      const finish = (message) => {
+        if (complete) return;
+        complete = true;
+        for (const worker of workers) worker.terminate();
+        URL.revokeObjectURL(objectUrl);
+        clearTimeout(deadline);
+        button.disabled = false;
+        if (message) { output.textContent = message; return; }
+        const report = summarizeRanges(samples);
+        // Deliberately omit input URL from results to avoid leaking signed URLs.
+        output.textContent = JSON.stringify(report, null, 2);
+      };
+      const deadline = setTimeout(() => finish('Timed out after 15s: not a valid concurrency measurement.'), 15000);
+      for (let i = 0; i < COUNT; i++) {
+        const worker = new Worker(objectUrl);
+        workers.push(worker);
+        worker.onerror = (event) => { event.preventDefault(); finish('Worker failed: ' + event.message); };
+        worker.onmessage = ({ data }) => {
+          if (complete) return;
+          if (data.ready) {
+            ready++;
+            if (ready === COUNT) {
+              for (let j = 0; j < COUNT; j++) {
+                workers[j].postMessage({ url: url.href, workerId: j, offset: j * BYTES, bytes: BYTES });
+              }
+            }
+            return;
+          }
+          samples.push(data);
+          done++;
+          if (done === COUNT) finish();
+        };
+      }
+    });
+  </script>
+</body>
+</html>
