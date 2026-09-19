@@ -1,0 +1,51 @@
+# Experimental branch only. The upstream matrix is preserved outside .github/workflows.
+name: DuckDB 2 alpha / fast checks
+
+on:
+  push:
+    branches:
+      - feat/duckdb-2dev-async-http
+    paths:
+      - .github/workflows/duckdb-2dev-fast.yml
+      - tools/async-io/**
+      - lib/**
+      - scripts/wasm_build_lib.sh
+      - submodules/duckdb
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify immutable DuckDB alpha pin (no clone)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          pins = json.loads(Path('tools/async-io/pins.json').read_text())
+          actual = subprocess.check_output(['git', 'ls-tree', 'HEAD', 'submodules/duckdb'], text=True).split()[2]
+          assert actual == pins['duckdb']['ref'], f'gitlink {actual} != pin {pins["duckdb"]["ref"]}'
+          assert pins['emscripten'] == '3.1.57'
+          assert pins['target'] == 'wasm_threads/coi'
+          print('PASS: pinned DuckDB 2 alpha gitlink and COI toolchain manifest')
+          PY
+
+      - name: Python porting-script regression tests
+        run: python3 -m unittest discover -s tools/async-io -p 'test_*.py' -v
+
+      - name: HTTP Range overlap analyzer tests
+        run: node --test tools/async-io/overlap.test.mjs
