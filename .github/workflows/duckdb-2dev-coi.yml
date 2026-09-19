@@ -1,0 +1,127 @@
+# One targeted build: only COI/pthreads, no TPC-H, Rust, shell, MVP or EH.
+name: DuckDB 2 alpha / COI build
+
+on:
+  push:
+    branches:
+      - feat/duckdb-2dev-async-http
+    paths:
+      - .github/workflows/duckdb-2dev-coi.yml
+      - lib/**
+      - scripts/wasm_build_lib.sh
+      - tools/async-io/port_api.py
+      - tools/async-io/pins.json
+      - submodules/duckdb
+      - .gitmodules
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha-coi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 600M
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Fetch only C++ build submodules (no TPC-H generator)
+        shell: bash
+        run: |
+          git submodule update --init --depth 1 --jobs 4 -- \
+            submodules/duckdb submodules/arrow submodules/benchmark \
+            submodules/gflags submodules/googletest submodules/rapidjson
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          pins = json.loads(Path('tools/async-io/pins.json').read_text())
+          actual = subprocess.check_output(['git', '-C', 'submodules/duckdb', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == pins['duckdb']['ref'], f'Wrong DuckDB revision: {actual}'
+          print('PASS: exact DuckDB 2 alpha source checkout', actual)
+          PY
+
+      - name: Apply source-checked 2.0 API compatibility patch
+        run: |
+          python3 tools/async-io/port_api.py --apply
+          python3 tools/async-io/port_api.py --check
+          # This diagnostic applies the tracked migration script in the runner;
+          # migrate its changes into source commits before claiming a clean port.
+          git diff --stat -- lib
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: '3.1.57'
+
+      - name: Install minimal build tools
+        shell: bash
+        run: |
+          if ! command -v ccache >/dev/null || ! command -v ninja >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ccache ninja-build
+          fi
+          npm install --global --no-audit --no-fund js-beautify@1.15.4
+          emcc --version | head -n 1
+
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: alpha-coi-emsdk-3.1.57-${{ runner.os }}-${{ hashFiles('lib/**', 'scripts/wasm_build_lib.sh', 'tools/async-io/port_api.py') }}
+          restore-keys: |
+            alpha-coi-emsdk-3.1.57-${{ runner.os }}-
+
+      - name: Build only the 2.0 COI runtime
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! (USE_GENERATED_EXPORTED_LIST=no \
+                DUCKDB_PLATFORM=wasm_threads \
+                DUCKDB_WASM_LOADABLE_EXTENSIONS=signed \
+                GEN=ninja \
+                ./scripts/wasm_build_lib.sh dev coi > build-coi.log 2>&1); then
+            echo '::error::COI build failed. The log artifact contains the full compiler output.'
+            grep -n -E 'error:|fatal error:|undefined symbol|CMake Error' build-coi.log | tail -n 90 || true
+            tail -n 120 build-coi.log
+            exit 1
+          fi
+          tail -n 40 build-coi.log
+
+      - name: Assert expected COI outputs
+        shell: bash
+        run: |
+          for file in duckdb-coi.js duckdb-coi.wasm duckdb-coi.pthread.js; do
+            test -s "packages/duckdb-wasm/src/bindings/$file" || {
+              echo "::error::Missing or empty build artifact $file"
+              exit 1
+            }
+          done
+
+      - name: Upload compiler log (success or failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-compiler-log
+          path: build-coi.log
+          if-no-files-found: ignore
+          retention-days: 2
+
+      - name: Upload COI runtime (only after successful build)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-runtime
+          path: |
+            packages/duckdb-wasm/src/bindings/duckdb-coi.js
+            packages/duckdb-wasm/src/bindings/duckdb-coi.wasm
+            packages/duckdb-wasm/src/bindings/duckdb-coi.pthread.js
+          if-no-files-found: error
+          retention-days: 2
