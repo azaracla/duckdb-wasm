@@ -15,6 +15,7 @@ on:
       - tools/async-io/patch_webdb_config_alpha.py
       - tools/async-io/patch_core_alpha.py
       - tools/async-io/patch_startup_async_threads.py
+      - tools/async-io/patch_static_parquet_loadable.py
       - tools/async-io/check_generated_coi.mjs
       - tools/async-io/pins.json
       - submodules/duckdb
@@ -69,6 +70,9 @@ jobs:
           # Limit the async background pool before DuckDB() allocates threads.
           python3 tools/async-io/patch_startup_async_threads.py --apply
           python3 tools/async-io/patch_startup_async_threads.py --check
+          # Linking Parquet is insufficient: register its static extension at open.
+          python3 tools/async-io/patch_static_parquet_loadable.py --apply
+          python3 tools/async-io/patch_static_parquet_loadable.py --check
           git diff --check
           git -C submodules/duckdb diff --check
 
@@ -91,7 +95,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: alpha-coi-loadable-emsdk-3.1.57-${{ runner.os }}-${{ hashFiles('lib/**', 'scripts/wasm_build_lib.sh', 'tools/async-io/port_api.py', 'tools/async-io/port_webdb_alpha.py', 'tools/async-io/patch_webdb_config_alpha.py', 'tools/async-io/patch_core_alpha.py', 'tools/async-io/patch_startup_async_threads.py') }}
+          key: alpha-coi-loadable-emsdk-3.1.57-${{ runner.os }}-${{ hashFiles('lib/**', 'scripts/wasm_build_lib.sh', 'tools/async-io/port_api.py', 'tools/async-io/port_webdb_alpha.py', 'tools/async-io/patch_webdb_config_alpha.py', 'tools/async-io/patch_core_alpha.py', 'tools/async-io/patch_startup_async_threads.py', 'tools/async-io/patch_static_parquet_loadable.py') }}
           restore-keys: |
             alpha-coi-loadable-emsdk-3.1.57-${{ runner.os }}-
             alpha-coi-emsdk-3.1.57-${{ runner.os }}-
