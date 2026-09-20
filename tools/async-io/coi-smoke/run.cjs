@@ -37,20 +37,49 @@ async function main() {
     });
     const page = await browser.newPage();
     const errors = [];
+    const workerSessions = [];
+    let workersSeen = 0;
+    // Main-page console does not reliably include nested pthread worker exceptions.
+    // Attach the Chrome DevTools Protocol to every worker target, not just the page.
+    browser.on('targetcreated', async target => {
+      if (target.type() !== 'worker') return;
+      const workerNumber = ++workersSeen;
+      console.log(`[pthread diagnostic] worker target ${workerNumber}: ${target.url()}`);
+      try {
+        const session = await target.createCDPSession();
+        workerSessions.push(session);
+        session.on('Runtime.exceptionThrown', ({ exceptionDetails }) => {
+          const exception = exceptionDetails.exception?.description || exceptionDetails.text;
+          console.error(`[pthread diagnostic] worker ${workerNumber} exception: ${exception}`);
+          errors.push(`pthread ${workerNumber}: ${exception}`);
+        });
+        session.on('Runtime.consoleAPICalled', ({ type, args }) => {
+          const message = args.map(arg => arg.value ?? arg.description ?? arg.type).join(' ');
+          if (type === 'error' || type === 'warning' || /worker|pthread|abort|error|failed/i.test(message)) {
+            console.log(`[pthread diagnostic] worker ${workerNumber} ${type}: ${message}`);
+          }
+        });
+        await session.send('Runtime.enable');
+      } catch (error) {
+        console.error(`[pthread diagnostic] worker ${workerNumber} CDP attach failed:`, error);
+      }
+    });
+    page.on('requestfailed', request => console.error(`[chrome requestfailed] ${request.url()}: ${request.failure()?.errorText}`));
     let rejectFatal;
     const fatal = new Promise((_, reject) => { rejectFatal = reject; });
-    // A page exception can happen during navigation; attach a rejection handler
-    // before navigating to avoid an unhandled rejection in Node.
     fatal.catch(() => {});
     page.on('console', message => console.log(`[chrome ${message.type()}] ${message.text()}`));
     page.on('pageerror', error => { errors.push(String(error)); console.error('[chrome pageerror]', error); rejectFatal(error); });
     page.on('error', error => { errors.push(String(error)); console.error('[chrome error]', error); rejectFatal(error); });
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    // Waiting in about:blank before goto loses its execution context on navigation.
-    await Promise.race([
-      page.waitForFunction(() => window.__alphaSmoke?.done === true, { timeout: 180000 }),
-      fatal,
-    ]);
+    try {
+      await Promise.race([
+        page.waitForFunction(() => window.__alphaSmoke?.done === true, { timeout: 90000 }),
+        fatal,
+      ]);
+    } finally {
+      console.log(`[pthread diagnostic] targets observed=${workersSeen}, CDP sessions=${workerSessions.length}, errors=${errors.length}`);
+    }
     const result = await page.evaluate(() => window.__alphaSmoke);
     console.log('COI BROWSER SMOKE:', JSON.stringify(result));
     if (errors.length || !result?.ok || !result.checks?.includes('threads=4, SQL=42')) {
