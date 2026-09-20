@@ -29,7 +29,7 @@ function canUseHTTPRangeBroker(mod: DuckDBModule): boolean {
         typeof Atomics.wait === 'function' &&
         typeof window === 'undefined' &&
         (mod as any).ENVIRONMENT_IS_PTHREAD === true &&
-        (globalThis as any).__duckdbCentralRangeBrokerReady === true
+        (globalThis as any).__duckdbRangeBrokerPort != null
     );
 }
 
@@ -51,11 +51,11 @@ function readHTTPRangeViaBroker(
         `[range-central:dispatch] parent=${parentWorkerId} location=${location} bytes=${bytes} t0=${started.toFixed(3)}`,
     );
 
-    // Every pthread posts to the Emscripten runtime worker that created it.
-    // That single parent owns the central async-fetch broker and can therefore
-    // launch requests from one JS event loop while this pthread sleeps.
-    globalThis.postMessage({
-        cmd: 'duckdb-http-range-request',
+    // The parent runtime installs one MessagePort per pthread. All ports end
+    // in ONE dedicated network worker, so all fetch() calls share one event
+    // loop even while the DuckDB runtime worker itself is blocked in runQuery().
+    const brokerPort = g.__duckdbRangeBrokerPort as MessagePort;
+    brokerPort.postMessage({
         url,
         buf,
         bytes,
