@@ -41,3 +41,14 @@ node tools/async-io/coi-smoke/run.cjs build/dev/coi-smoke
 ```
 
 Read the `parquet.samplesMs`, `parquet.medianMs`, and `rangeTrace` fields from `COI BROWSER SMOKE`. CI stores the complete logs as benchmark artifacts.
+
+
+## Validated CI result
+
+Browser run `35528519665` passed both latency models on DuckDB `v2.0.0-dev1`.
+
+With 150 ms injected per ranged GET, the sync-XHR median was **6520.505 ms** and the async broker median **2850.850 ms**, a **2.287x** median speedup. P95 improved from **6523.935 ms** to **2884.710 ms** (**2.262x**). Stable trials issued 42 ranged GETs / 1,647,224 transferred bytes; maximum overlap rose from 1 to 3.
+
+At zero injected latency, raw trial medians are not meaningful because DuckDB emitted different request cohorts across trials. For the shared stable cohort of 42 ranged GETs / 1,647,224 bytes, both transports were approximately **480 ms**, so the broker showed no material overhead in that matched workload.
+
+The benchmark runner selects comparable cohorts by request signature and requires at least two **paired** observations per transport before applying a performance gate. The latency-bound matched median must improve by at least 1.5x; the zero-latency matched median may regress by at most 10%.
