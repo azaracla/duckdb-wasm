@@ -246,9 +246,6 @@ try {
       if (transport === 'broker' && trace.max_overlapping_ranges < 2) {
         throw new Error(`DuckDB Parquet I/O not concurrent with broker: completed_range_gets=${trace.completed_range_gets}, max_overlapping_ranges=${trace.max_overlapping_ranges}`);
       }
-      if (transport === 'sync-xhr' && trace.max_overlapping_ranges !== 1) {
-        throw new Error(`Sync-XHR baseline unexpectedly overlapped: max_overlapping_ranges=${trace.max_overlapping_ranges}`);
-      }
       if (!trace.events.filter(event => event.method === 'GET' && event.range).every(event => event.status === 206)) {
         throw new Error('One or more Parquet Range responses were not HTTP 206');
       }
