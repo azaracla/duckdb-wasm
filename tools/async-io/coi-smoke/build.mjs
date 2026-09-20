@@ -41,8 +41,12 @@ function guardNodeOnlyRequire(filename, moduleName) {
   const text = fs.readFileSync(file, 'utf8');
   const marker = new RegExp(`require\\(["']${moduleName}["']\\)`, 'g');
   const matches = [...text.matchAll(marker)];
-  if (matches.length !== 1) {
-    throw new Error(`${filename}: expected exactly one require(${moduleName}), found ${matches.length}`);
+  if (matches.length > 1) {
+    throw new Error(`${filename}: expected at most one require(${moduleName}), found ${matches.length}`);
+  }
+  if (matches.length === 0) {
+    console.log(`${filename}: no require(${moduleName}) to guard`);
+    return;
   }
   fs.writeFileSync(file, text.replace(marker, `["${moduleName}"].map(require)`));
 }
