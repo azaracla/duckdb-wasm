@@ -37,11 +37,14 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Download verified DuckDB 2 loadable COI runtime
+      # Build 35532334895 successfully compiled the COI runtime with the
+      # guarded async_threads=2 configuration applied before DB construction.
+      # Never silently use the earlier uncapped build 35528908281 here.
+      - name: Download pre-open async-capped DuckDB 2 loadable COI runtime
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: '35528908281'
+          run-id: '35532334895'
           name: alpha-coi-loadable-runtime
           path: packages/duckdb-wasm/src/bindings
 
