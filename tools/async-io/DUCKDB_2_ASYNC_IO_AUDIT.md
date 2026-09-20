@@ -58,7 +58,15 @@ Run `35525300369` exercised a real column scan with `threads=4`, `async_threads=
 
 The same run repeatedly logged `Tried to spawn a new thread, but the thread pool is exhausted.` before the scan. The acceptance harness had previously exercised `SET threads=1/2/4` in the same database before enabling the async pool, which can create misleading Emscripten pool pressure. The next run removes that churn for the Range gate, opens with `maximumThreads=2`, keeps `threads=2`, `async_threads=2`, `read_ahead_depth=4`, and prints explicit worker IDs for every Range request.
 
-A separate C++ concern is now identified: `WebFileSystem::OnDiskFile(FileHandle&)` currently returns `true` unconditionally, including HTTP/S3-backed files. If the no-churn run remains serialized, inspect the pinned Parquet read-ahead decision path for `OnDiskFile`/remote-file behavior and correct this classification rather than increasing the Emscripten worker pool blindly.
+A separate C++ concern is now identified: `WebFileSystem::OnDiskFile(FileHandle&)` currently returns `true` unconditionally, including HTTP/S3-backed files. This classification is suspicious and should eventually be corrected/tested, but the next no-churn run provides stronger localization evidence before changing C++.
+
+### 2026-09-20 no-churn result and transport localization
+
+Run `35525610891` used `maximum_threads=2`, `threads=2`, `async_threads=2`, `read_ahead_depth=4` without the previous `1 -> 2 -> 4` settings churn. It again returned the correct `SUM(id)=19999900000`, issued 42 HTTP 206 Range GETs, and still measured `max_overlapping_ranges=1` on the threaded fixture server. Therefore removing thread-setting churn did not make the wire traffic concurrent.
+
+The worker instrumentation is more informative than the server aggregate alone: multiple distinct DuckDB pthread JS runtimes logged `[range:start]` for independent offsets before earlier XHRs had logged `[range:end]` (for example workers `vy84rg`, `tyan9u`, and `p6mg7g` around the first data reads). This demonstrates that DuckDB/Parquet is already dispatching independent filesystem reads onto multiple workers and that each worker reaches the synchronous-XHR call. The serialization therefore occurs at or below the browser XHR/network layer, or in Emscripten/browser routing around those worker XHRs; it is not currently justified to blame Parquet task creation or `OnDiskFile()` as the primary blocker.
+
+Commit `6273ae0dfba9c9022860024788383e9b98e43aa0` adds a discriminating browser control to the same smoke: four plain Web Workers issue synchronous Range XHRs to the same instrumented origin, the server trace is recorded, and then the trace is reset before the one-query DuckDB acceptance gate. This synthetic control can never satisfy the DuckDB acceptance criterion. Its only purpose is localization: if plain workers also measure `max_overlapping_ranges=1`, investigate Chromium/synchronous-XHR transport and move toward an async fetch broker; if the plain-worker control overlaps while DuckDB remains serial, inspect Emscripten pthread import/runtime routing. Do not change `OnDiskFile()` merely to chase the metric before this control is read.
 
 ## Mandatory end-to-end measurement gate
 
