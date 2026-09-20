@@ -68,6 +68,23 @@ The worker instrumentation is more informative than the server aggregate alone: 
 
 Commit `6273ae0dfba9c9022860024788383e9b98e43aa0` adds a discriminating browser control to the same smoke: four plain Web Workers issue synchronous Range XHRs to the same instrumented origin, the server trace is recorded, and then the trace is reset before the one-query DuckDB acceptance gate. This synthetic control can never satisfy the DuckDB acceptance criterion. Its only purpose is localization: if plain workers also measure `max_overlapping_ranges=1`, investigate Chromium/synchronous-XHR transport and move toward an async fetch broker; if the plain-worker control overlaps while DuckDB remains serial, inspect Emscripten pthread import/runtime routing. Do not change `OnDiskFile()` merely to chase the metric before this control is read.
 
+## 2026-09-20 acceptance milestone: real DuckDB Range overlap proven
+
+The strict single-query transport gate is now **PASS**. Commit `495fda169aff04918073c8edd9262c9cc1d0d225` routes HTTP reads from all Emscripten pthreads through one dedicated browser network worker. Each pthread owns a `MessagePort` into that worker, blocks on a per-request `SharedArrayBuffer` control word, and the broker launches asynchronous `fetch()` calls from one JS event loop, writes validated response bytes directly into the shared WASM heap, then wakes the caller.
+
+Run `35526596957` already demonstrated the engine result despite a stale runner assertion: one real `SELECT SUM(id)::HUGEINT FROM read_parquet('fixture.parquet')` returned `19999900000`, emitted 18 completed HTTP Range GETs, all HTTP 206, and the server measured `max_inflight=3` / `max_overlapping_ranges=3`. The same run measured about 1.46 s on the deliberately 150 ms/request fixture, versus roughly 6.5 s for the earlier serialized-XHR runs. That timing is diagnostic only; it is **not** a DuckLake performance claim because the fixture injects latency and the request grouping changed.
+
+Commit `bf62e7be5c4f7bab05f83cc36169ef40368ca814` fixes the runner's obsolete `threads=4` assertion for Range mode. Follow-up run `35526669568` passed end to end, so the acceptance result is no longer hidden behind a CI false negative.
+
+The localization evidence is also now definitive for this Chromium setup:
+
+- plain synchronous XHR from separate workers: serial on the wire (`max_overlapping_ranges=1`);
+- async `fetch()` calls launched together from one JS context: overlap (`max_overlapping_ranges=4` in the control);
+- async `fetch()` from one nested helper per pthread: still serial on the wire;
+- one dedicated network worker fed by all pthreads over `MessageChannel`: real DuckDB query overlap (`max_overlapping_ranges=3`).
+
+This means `WebFileSystem::OnDiskFile()` remains a correctness/classification cleanup, but it is not the blocker that prevented HTTP overlap in this test. The transport bridge was the missing piece. The next mandatory gate is DuckLake itself: build/load a DuckLake extension matched to the pinned DuckDB 2 source, execute representative remote queries through this same browser filesystem path, and compare against a controlled serialized/no-read-ahead baseline before claiming a product speedup.
+
 ## Mandatory end-to-end measurement gate
 
 1. Same pinned core, browser and reproducible Parquet fixture with multiple row groups/column chunks, served from the instrumented HTTP Range server above.
