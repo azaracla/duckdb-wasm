@@ -1,5 +1,5 @@
-# Experimental branch only: one COI build, followed by a minimal real-browser smoke.
-# No TPC-H, Rust, shell, MVP/EH, full monorepo install or broad Karma matrix.
+# Build the COI WASM only when the binary inputs change.
+# Browser/TypeScript-only work belongs to duckdb-2dev-browser-smoke.yml.
 name: DuckDB 2 alpha / COI build
 
 on:
@@ -7,7 +7,6 @@ on:
     branches:
       - feat/duckdb-2dev-async-http
     paths:
-      - .github/workflows/duckdb-2dev-coi.yml
       - lib/**
       - scripts/wasm_build_lib.sh
       - tools/async-io/port_api.py
@@ -15,11 +14,10 @@ on:
       - tools/async-io/patch_webdb_config_alpha.py
       - tools/async-io/patch_core_alpha.py
       - tools/async-io/check_generated_coi.mjs
-      - tools/async-io/coi-smoke/**
       - tools/async-io/pins.json
-      - packages/duckdb-wasm/src/**
       - submodules/duckdb
       - .gitmodules
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -157,14 +155,12 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
-  # Isolated browser gate consumes the successful artifact, not a second C++ build.
-  # A failed build cannot become a green browser run; no old artifacts are reused.
+  # Browser gate uses the just-built runtime; never builds DuckDB a second time.
   browser-smoke:
     needs: coi
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
-      # runner.temp is unavailable in job-level env expressions; github.workspace is allowed.
       ALPHA_SMOKE_DEPS: ${{ github.workspace }}/.alpha-smoke-deps
     steps:
       - uses: actions/checkout@v6
@@ -192,7 +188,8 @@ jobs:
         run: |
           command -v google-chrome || command -v chromium || command -v chromium-browser
           npm install --prefix "$ALPHA_SMOKE_DEPS" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund \
-            esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0
+            esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0 \
+            wasm-feature-detect@1.6.1 web-worker@1.2.0 js-sha256@0.11.1
 
       - name: Bundle only the real COI API and worker
         shell: bash
