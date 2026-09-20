@@ -1,0 +1,99 @@
+# Separate lightweight browser gate; NEVER recompiles DuckDB or runs the main matrix.
+name: DuckDB 2 alpha / browser SQL smoke
+
+on:
+  push:
+    branches:
+      - feat/duckdb-2dev-async-http
+    paths:
+      - .github/workflows/duckdb-2dev-browser-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: alpha-browser-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ALPHA_SMOKE_DEPS: ${{ runner.temp }}/alpha-smoke-deps
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+          fetch-depth: 0
+
+      - name: Select newest successful corrected COI build (fail closed on stale artifact)
+        id: source
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          params = urlencode({'branch': 'feat/duckdb-2dev-async-http', 'status': 'success', 'per_page': 30})
+          url = f'https://api.github.com/repos/{repo}/actions/workflows/duckdb-2dev-coi.yml/runs?{params}'
+          request = Request(url, headers={
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GITHUB_TOKEN"]}',
+              'X-GitHub-Api-Version': '2022-11-28',
+          })
+          with urlopen(request, timeout=20) as response:
+              runs = json.load(response)['workflow_runs']
+          # This SHA introduced the actual fix for the destructive JS export filter.
+          fixed_at = '91f40a9d7c9c2903008a0f793641cd638767c32e'
+          for run in sorted(runs, key=lambda item: item['id'], reverse=True):
+              sha = run['head_sha']
+              fixes_glue = subprocess.run(['git', 'merge-base', '--is-ancestor', fixed_at, sha], check=False).returncode == 0
+              in_branch = subprocess.run(['git', 'merge-base', '--is-ancestor', sha, 'HEAD'], check=False).returncode == 0
+              if fixes_glue and in_branch:
+                  with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                      output.write(f'run_id={run["id"]}\n')
+                  print(f'Selected corrected COI artifact from run {run["id"]}, commit {sha}')
+                  break
+          else:
+              raise SystemExit('No successful COI build containing the JS glue fix; refusing old broken artifacts')
+          PY
+
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          name: alpha-coi-runtime
+          path: packages/duckdb-wasm/src/bindings
+
+      - name: Verify exact runtime artifacts without rebuilding
+        shell: bash
+        run: |
+          for file in duckdb-coi.js duckdb-coi.wasm duckdb-coi.pthread.js; do
+            test -s "packages/duckdb-wasm/src/bindings/$file"
+          done
+          node --check packages/duckdb-wasm/src/bindings/duckdb-coi.js
+          node tools/async-io/check_generated_coi.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
+
+      - name: Install ONLY isolated browser smoke dependencies
+        shell: bash
+        run: |
+          npm install --prefix "$ALPHA_SMOKE_DEPS" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund \
+            esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0
+
+      - name: Bundle ONLY browser API, COI dispatcher and pthread wrapper
+        shell: bash
+        run: node tools/async-io/coi-smoke/build.mjs "$RUNNER_TEMP/coi-site"
+
+      - name: Headless Chrome — COOP/COEP, DuckDB 2, SELECT 42, 1/2/4 threads
+        shell: bash
+        run: node tools/async-io/coi-smoke/run.cjs "$RUNNER_TEMP/coi-site"
