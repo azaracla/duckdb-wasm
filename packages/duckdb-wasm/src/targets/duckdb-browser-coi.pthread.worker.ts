@@ -9,6 +9,16 @@ for (const func of Object.getOwnPropertyNames(BROWSER_RUNTIME)) {
     globalThis.DUCKDB_RUNTIME[func] = Object.getOwnPropertyDescriptor(BROWSER_RUNTIME, func)!.value;
 }
 
+// Temporary, bounded diagnostic: Emscripten's parent worker reports unknown
+// commands to its existing printErr, which the browser smoke captures. This
+// works even though Puppeteer's targetcreated omits nested workers. Only trace
+// worker #1 so the 32-worker preload does not flood logs. This deliberately
+// never sends a fake `loaded` acknowledgement or changes pool semantics.
+const traceStartup = (workerID: number, stage: string): void => {
+    if (workerID !== 1) return;
+    postMessage({ cmd: `coi-startup-worker-1:${stage}` });
+};
+
 // The generated Emscripten 3.1.57 pthread worker queues messages during the
 // asynchronous module load, copies sharedModules/handlers/workerID, and only
 // acknowledges `loaded` once startWorker is called. We bundle DuckDB instead
@@ -17,6 +27,7 @@ const generatedOnMessage = pthread_api.onmessage;
 const handleMessage = (event: MessageEvent<any>): void => {
     const data = event.data;
     if (data.cmd === 'load') {
+        traceStartup(data.workerID, 'load-received');
         const queued: MessageEvent<any>[] = [];
         globalThis.onmessage = (next: MessageEvent<any>) => queued.push(next);
         const module = pthread_api.getModule();
@@ -30,17 +41,25 @@ const handleMessage = (event: MessageEvent<any>): void => {
             module[handler] = (...args: any[]) => postMessage({ cmd: 'callHandler', handler, args });
         }
         (globalThis as any).startWorker = (instance: any) => {
+            traceStartup(data.workerID, 'startWorker-entered');
             pthread_api.setModule(instance);
             postMessage({ cmd: 'loaded' });
+            traceStartup(data.workerID, 'loaded-posted');
             globalThis.onmessage = handleMessage;
             for (const pending of queued) handleMessage(pending);
         };
         try {
-            DuckDB(module).catch((error: unknown) => {
+            traceStartup(data.workerID, 'duckdb-factory-enter');
+            DuckDB(module).then(() => {
+                traceStartup(data.workerID, 'duckdb-factory-resolved');
+            }).catch((error: unknown) => {
+                traceStartup(data.workerID, 'duckdb-factory-rejected');
                 console.error('[coi pthread] module initialization failed', data.workerID, error);
                 throw error;
             });
+            traceStartup(data.workerID, 'duckdb-factory-returned');
         } catch (error) {
+            traceStartup(data.workerID, 'duckdb-factory-threw');
             console.error('[coi pthread] module initialization threw', data.workerID, error);
             throw error;
         }
