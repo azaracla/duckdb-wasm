@@ -12,9 +12,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(ignoreMe "${DUCKDB_WASM_VERSION}")
 
 option(DUCKDB_WASM_LOADABLE_EXTENSIONS "Build with loadable extensions" OFF)
+option(DUCKDB_WASM_STATIC_PARQUET_WITH_LOADABLE "Keep Parquet statically linked in a loadable-extension runtime" OFF)
 
 if(DEFINED ENV{DUCKDB_WASM_LOADABLE_EXTENSIONS})
   set(DUCKDB_WASM_LOADABLE_EXTENSIONS ON)
+endif()
+if(DEFINED ENV{DUCKDB_WASM_STATIC_PARQUET_WITH_LOADABLE})
+  set(DUCKDB_WASM_STATIC_PARQUET_WITH_LOADABLE ON)
 endif()
 
 
@@ -250,7 +254,15 @@ if (DUCKDB_WASM_LOADABLE_EXTENSIONS)
   set(JSON_EXTENSION_CACHE_FILE "${EXTENSION_CACHE_DIR}/json")
   set(DUCKDB_WEB_JSON "")
 
-  target_link_libraries(duckdb_web duckdb arrow rapidjson ${THREAD_LIBS})
+  if (DUCKDB_WASM_STATIC_PARQUET_WITH_LOADABLE)
+    add_library(
+      duckdb_web_parquet
+      ${CMAKE_SOURCE_DIR}/src/extensions/parquet_extension.cc)
+    target_link_libraries(duckdb_web duckdb duckdb_web_parquet arrow rapidjson ${THREAD_LIBS})
+    target_link_libraries(duckdb_web_parquet duckdb duckdb_parquet)
+  else()
+    target_link_libraries(duckdb_web duckdb arrow rapidjson ${THREAD_LIBS})
+  endif()
 else()
   add_library(
     duckdb_web_parquet
