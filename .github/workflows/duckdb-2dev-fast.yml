@@ -55,5 +55,5 @@ jobs:
           python3 tools/async-io/patch_webdb_config_alpha.py --check
           git diff --check
 
-      - name: HTTP Range overlap analyzer tests
-        run: node --test tools/async-io/overlap.test.mjs
+      - name: HTTP Range and generated COI glue regression tests
+        run: node --test tools/async-io/*.test.mjs
