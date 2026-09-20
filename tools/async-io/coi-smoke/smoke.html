@@ -24,7 +24,15 @@ try {
   status.version = version;
   status.checks.push('runtime initialization and DuckDB 2 version');
 
-  await db.open({ path: ':memory:', maximum_threads: 4 });
+  await db.open({
+    path: ':memory:',
+    maximum_threads: 4,
+    filesystem: {
+      reliableHeadRequests: true,
+      allowFullHTTPReads: false,
+      forceFullHTTPReads: false,
+    },
+  });
   const connection = await db.connect();
   try {
     const scalar = await connection.query('SELECT 42 AS answer');
