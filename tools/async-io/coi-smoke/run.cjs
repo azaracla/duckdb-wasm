@@ -35,16 +35,35 @@ async function main() {
       headless: true,
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-proxy-server'],
     });
+    // Puppeteer's browser.on('targetcreated') missed every pthread in the prior
+    // run: pthread workers are children of the dispatcher worker, not the page.
+    // Discover all Chrome targets at browser scope, independently of Puppeteer.
+    const browserCDP = await browser.createBrowserCDPSession();
+    const discovered = new Map();
+    const crashed = new Set();
+    browserCDP.on('Target.targetCreated', ({ targetInfo }) => {
+      if (!/worker/i.test(targetInfo.type)) return;
+      discovered.set(targetInfo.targetId, { type: targetInfo.type, url: targetInfo.url });
+      console.log(`[browser CDP] worker created id=${targetInfo.targetId} type=${targetInfo.type} url=${targetInfo.url}`);
+    });
+    browserCDP.on('Target.targetInfoChanged', ({ targetInfo }) => {
+      if (discovered.has(targetInfo.targetId)) discovered.set(targetInfo.targetId, { type: targetInfo.type, url: targetInfo.url });
+    });
+    browserCDP.on('Target.targetCrashed', ({ targetId, status, errorCode }) => {
+      crashed.add(targetId);
+      console.error(`[browser CDP] target crashed id=${targetId} status=${status} errorCode=${errorCode}`);
+    });
+    await browserCDP.send('Target.setDiscoverTargets', { discover: true });
     const page = await browser.newPage();
     const errors = [];
     const workerSessions = [];
     let workersSeen = 0;
-    // Main-page console does not reliably include nested pthread worker exceptions.
-    // Attach the Chrome DevTools Protocol to every worker target, not just the page.
+    // Keep the Puppeteer-level exception probe where available, but never
+    // equate zero Puppeteer targets with zero nested Emscripten pthreads.
     browser.on('targetcreated', async target => {
       if (target.type() !== 'worker') return;
       const workerNumber = ++workersSeen;
-      console.log(`[pthread diagnostic] worker target ${workerNumber}: ${target.url()}`);
+      console.log(`[pthread diagnostic] Puppeteer worker target ${workerNumber}: ${target.url()}`);
       try {
         const session = await target.createCDPSession();
         workerSessions.push(session);
@@ -78,12 +97,18 @@ async function main() {
         fatal,
       ]);
     } finally {
-      console.log(`[pthread diagnostic] targets observed=${workersSeen}, CDP sessions=${workerSessions.length}, errors=${errors.length}`);
+      const targets = await browserCDP.send('Target.getTargets').catch(error => {
+        console.error('[browser CDP] target snapshot failed:', error.message);
+        return { targetInfos: [] };
+      });
+      const live = targets.targetInfos.filter(info => /worker/i.test(info.type));
+      console.log(`[pthread diagnostic] browser-discovered=${discovered.size}, live-workers=${live.length}, crashed-targets=${crashed.size}, puppeteer-targets=${workersSeen}, CDP-sessions=${workerSessions.length}, errors=${errors.length}`);
+      for (const info of live) console.log(`[browser CDP] live worker id=${info.targetId} type=${info.type} attached=${info.attached} url=${info.url}`);
     }
     const result = await page.evaluate(() => window.__alphaSmoke);
     console.log('COI BROWSER SMOKE:', JSON.stringify(result));
-    if (errors.length || !result?.ok || !result.checks?.includes('threads=4, SQL=42')) {
-      throw new Error(`COI browser failed: ${JSON.stringify({ result, errors })}`);
+    if (errors.length || crashed.size || !result?.ok || !result.checks?.includes('threads=4, SQL=42')) {
+      throw new Error(`COI browser failed: ${JSON.stringify({ result, errors, crashed: [...crashed] })}`);
     }
     console.log('PASS: browser COI initialized DuckDB 2, SELECT 42 and thread settings 1/2/4');
   } finally {
