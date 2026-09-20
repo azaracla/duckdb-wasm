@@ -35,7 +35,7 @@ jobs:
           submodules: false
           fetch-depth: 0
 
-      - name: Select verified 32-worker COI artifact from successful compilation job
+      - name: Select verified 8-worker COI artifact from successful compilation job
         id: source
         shell: bash
         env:
@@ -61,7 +61,7 @@ jobs:
           params = urlencode({'branch': 'feat/duckdb-2dev-async-http', 'status': 'completed', 'per_page': 50})
           runs = fetch(f'https://api.github.com/repos/{repo}/actions/workflows/duckdb-2dev-coi.yml/runs?{params}')['workflow_runs']
           # Do not silently fall back to the old four-worker build: its browser test deadlocked.
-          fixed_at = '1e9cdad9a3d3bb24d3508c2f2c6894ec9e566b5a'
+          fixed_at = '722ce810cfd7b43523e654195b227b2f9de4e521'
           for run in sorted(runs, key=lambda item: item['id'], reverse=True):
               sha = run['head_sha']
               if subprocess.run(['git', 'merge-base', '--is-ancestor', fixed_at, sha], check=False).returncode != 0:
@@ -76,10 +76,10 @@ jobs:
                   continue
               with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
                   output.write(f'run_id={run["id"]}\n')
-              print(f'Selected verified 32-worker COI artifact: run {run["id"]}, commit {sha}; compilation job green')
+              print(f'Selected verified 8-worker COI artifact: run {run["id"]}, commit {sha}; compilation job green')
               break
           else:
-              raise SystemExit('No corrected 32-worker COI run with successful compilation and live runtime artifact')
+              raise SystemExit('No corrected 8-worker COI run with successful compilation and live runtime artifact')
           PY
 
       - uses: actions/download-artifact@v4
@@ -110,8 +110,39 @@ jobs:
         shell: bash
         run: node tools/async-io/coi-smoke/build.mjs "$RUNNER_TEMP/coi-site"
 
-      - name: Headless Chrome — COOP/COEP, DuckDB 2, SELECT 42, 1/2/4 threads
+      - name: Generate deterministic multi-row-group Parquet fixture
         shell: bash
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-input pyarrow==21.0.0
+          python3 - <<'PY'
+          import os
+          import pyarrow as pa
+          import pyarrow.parquet as pq
+
+          path = os.path.join(os.environ['RUNNER_TEMP'], 'async-io-fixture.parquet')
+          rows = 200_000
+          table = pa.table({
+              'id': pa.array(range(rows), type=pa.int64()),
+              'bucket': pa.array((i % 97 for i in range(rows)), type=pa.int32()),
+              'value': pa.array((float(i % 1000) / 10 for i in range(rows)), type=pa.float64()),
+          })
+          pq.write_table(
+              table,
+              path,
+              row_group_size=10_000,
+              compression='snappy',
+              use_dictionary=False,
+          )
+          metadata = pq.ParquetFile(path).metadata
+          assert metadata.num_row_groups == 20, metadata.num_row_groups
+          print(f'Parquet fixture: {path}, rows={metadata.num_rows}, row_groups={metadata.num_row_groups}, bytes={os.path.getsize(path)}')
+          PY
+
+      - name: Headless Chrome — DuckDB SQL plus one-query overlapping HTTP Range acceptance
+        shell: bash
+        env:
+          ALPHA_PARQUET_FIXTURE: ${{ runner.temp }}/async-io-fixture.parquet
+          ALPHA_RANGE_DELAY_MS: "150"
         run: |
           set -o pipefail
           node tools/async-io/coi-smoke/run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee browser-smoke.log
