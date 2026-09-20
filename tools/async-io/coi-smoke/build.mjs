@@ -32,6 +32,23 @@ for (const name of ['duckdb-coi.js', 'duckdb-coi.wasm', 'duckdb-coi.pthread.js']
   if (!fs.statSync(path.join(bindings, name)).size) throw new Error(`Empty ${name}`);
 }
 
+// Mirror only the two relevant dynamic-require guards from the project's
+// existing bundle.mjs. Otherwise esbuild tries to resolve Node-only modules
+// (child_process or vm) while packaging a browser-only IIFE. These changes
+// affect only the disposable generated build checkout, never checked-in code.
+function guardNodeOnlyRequire(filename, moduleName) {
+  const file = path.join(bindings, filename);
+  const text = fs.readFileSync(file, 'utf8');
+  const marker = new RegExp(`require\\(["']${moduleName}["']\\)`, 'g');
+  const matches = [...text.matchAll(marker)];
+  if (matches.length !== 1) {
+    throw new Error(`${filename}: expected exactly one require(${moduleName}), found ${matches.length}`);
+  }
+  fs.writeFileSync(file, text.replace(marker, `["${moduleName}"].map(require)`));
+}
+guardNodeOnlyRequire('duckdb-coi.js', 'child_process');
+guardNodeOnlyRequire('duckdb-coi.pthread.js', 'vm');
+
 const common = {
   platform: 'browser',
   bundle: true,
