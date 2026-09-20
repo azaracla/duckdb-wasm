@@ -37,11 +37,17 @@ async function main() {
     });
     const page = await browser.newPage();
     const errors = [];
+    let rejectFatal;
+    const fatal = new Promise((_, reject) => { rejectFatal = reject; });
     page.on('console', message => console.log(`[chrome ${message.type()}] ${message.text()}`));
-    page.on('pageerror', error => { errors.push(String(error)); console.error('[chrome pageerror]', error); });
-    page.on('error', error => { errors.push(String(error)); console.error('[chrome error]', error); });
+    page.on('pageerror', error => { errors.push(String(error)); console.error('[chrome pageerror]', error); rejectFatal(error); });
+    page.on('error', error => { errors.push(String(error)); console.error('[chrome error]', error); rejectFatal(error); });
+    const completed = Promise.race([
+      page.waitForFunction(() => window.__alphaSmoke?.done === true, { timeout: 180000 }),
+      fatal,
+    ]);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForFunction(() => window.__alphaSmoke?.done === true, { timeout: 180000 });
+    await completed;
     const result = await page.evaluate(() => window.__alphaSmoke);
     console.log('COI BROWSER SMOKE:', JSON.stringify(result));
     if (errors.length || !result?.ok || !result.checks?.includes('threads=4, SQL=42')) {
