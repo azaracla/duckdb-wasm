@@ -11,6 +11,7 @@ on:
       - packages/duckdb-wasm/src/targets/duckdb-browser-coi.worker.ts
       - packages/duckdb-wasm/src/bindings/bindings_browser_coi.ts
       - packages/duckdb-wasm/src/bindings/bindings_browser_base.ts
+      - packages/duckdb-wasm/src/bindings/runtime_browser.ts
       - tools/async-io/coi-smoke/**
   workflow_dispatch:
 
