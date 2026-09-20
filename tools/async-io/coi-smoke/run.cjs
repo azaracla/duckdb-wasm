@@ -11,6 +11,10 @@ const puppeteer = require(path.join(path.resolve(deps), 'node_modules/puppeteer-
 const dir = path.resolve(process.argv[2] || 'build/dev/coi-smoke');
 const port = Number(process.env.ALPHA_SMOKE_PORT || 8766);
 const baseURL = `http://127.0.0.1:${port}/smoke.html`;
+const transport = process.env.ALPHA_RANGE_TRANSPORT || 'broker';
+const repeat = Number(process.env.ALPHA_RANGE_REPEAT || 1);
+if (!['broker', 'sync-xhr'].includes(transport)) throw new Error(`Unsupported ALPHA_RANGE_TRANSPORT: ${transport}`);
+if (!Number.isInteger(repeat) || repeat < 1 || repeat > 20) throw new Error(`Invalid ALPHA_RANGE_REPEAT: ${repeat}`);
 const script = path.join(__dirname, 'serve.py');
 const candidates = [process.env.CHROME_BIN, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
 const chrome = candidates.find(binary => binary && fs.existsSync(binary));
@@ -45,8 +49,8 @@ async function main() {
       const rangeOrigin = `http://127.0.0.1:${rangePort}`;
       rangeServer = spawn('python3', [path.join(__dirname, '../range_trace_server.py'), '--file', fixture, '--port', String(rangePort), '--delay-ms', String(Number(process.env.ALPHA_RANGE_DELAY_MS || 100))], { stdio: 'inherit' });
       await waitForServer(`${rangeOrigin}/__trace`, rangeServer);
-      url += `?rangeBase=${encodeURIComponent(rangeOrigin + '/')}`;
-      console.log(`[range acceptance] enabled for fixture ${fixture}; SQL origin ${rangeOrigin}`);
+      url += `?rangeBase=${encodeURIComponent(rangeOrigin + '/')}&transport=${encodeURIComponent(transport)}&repeat=${repeat}&controls=${process.env.ALPHA_RANGE_CONTROLS === '1' ? '1' : '0'}`;
+      console.log(`[range acceptance] enabled for fixture ${fixture}; SQL origin ${rangeOrigin}; transport=${transport}; repeat=${repeat}`);
     } else {
       console.log('[range acceptance] NOT RUN: set ALPHA_PARQUET_FIXTURE to enable real DuckDB Parquet SQL overlap validation');
     }
@@ -128,11 +132,16 @@ async function main() {
     if (errors.length || crashed.size || !result?.ok || !result.checks?.includes('threads=2, SQL=42')) {
       throw new Error(`COI browser failed: ${JSON.stringify({ result, errors, crashed: [...crashed] })}`);
     }
-    if (rangeServer && !result.checks.includes('one DuckDB Parquet query with >=2 overlapping HTTP Range reads')) {
+    if (rangeServer && transport === 'broker' && !result.checks.includes('one DuckDB Parquet query with >=2 overlapping HTTP Range reads')) {
       throw new Error('Range acceptance enabled but one-query overlap was not verified');
     }
+    if (rangeServer && transport === 'sync-xhr' && !result.checks.includes('DuckDB Parquet sync-XHR transport baseline')) {
+      throw new Error('Sync-XHR benchmark baseline did not complete');
+    }
     console.log('PASS: browser COI initialized DuckDB 2, SELECT 42 and threads=2');
-    if (rangeServer) console.log('PASS: one real DuckDB Parquet SQL query emitted overlapping HTTP 206 Range GETs');
+    if (rangeServer) console.log(transport === 'broker'
+      ? 'PASS: one real DuckDB Parquet SQL query emitted overlapping HTTP 206 Range GETs'
+      : 'PASS: one real DuckDB Parquet SQL query completed through the serialized sync-XHR baseline');
   } finally {
     if (browser) await browser.close();
     if (rangeServer) rangeServer.kill('SIGTERM');
