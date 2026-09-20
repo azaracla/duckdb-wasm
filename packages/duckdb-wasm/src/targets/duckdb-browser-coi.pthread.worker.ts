@@ -1,6 +1,6 @@
 import * as pthread_api from '../bindings/duckdb-coi.pthread';
 import DuckDB from '../bindings/duckdb-coi';
-import { BROWSER_RUNTIME, prepareHTTPRangeBroker } from '../bindings/runtime_browser';
+import { BROWSER_RUNTIME } from '../bindings/runtime_browser';
 
 // Register the global DuckDB runtime.
 globalThis.DUCKDB_RUNTIME = {};
@@ -62,20 +62,10 @@ const handleMessage = (event: MessageEvent<any>): void => {
         (globalThis as any).startWorker = (instance: any) => {
             traceStartup(data.workerID, 'startWorker-entered');
             pthread_api.setModule(instance);
-            // Prewarm the nested async-fetch helper before Emscripten marks this
-            // pthread ready. readFile() later blocks with Atomics.wait(), so
-            // creating the helper lazily at first read can deadlock its startup.
-            prepareHTTPRangeBroker().then(() => {
-                traceStartup(data.workerID, 'range-broker-ready');
-                postMessage({ cmd: 'loaded' });
-                traceStartup(data.workerID, 'loaded-posted');
-                globalThis.onmessage = handleMessage;
-                for (const pending of queued) handleMessage(pending);
-            }).catch((error: unknown) => {
-                traceStartup(data.workerID, 'range-broker-failed');
-                console.error('[coi pthread] range broker initialization failed', data.workerID, error);
-                throw error;
-            });
+            postMessage({ cmd: 'loaded' });
+            traceStartup(data.workerID, 'loaded-posted');
+            globalThis.onmessage = handleMessage;
+            for (const pending of queued) handleMessage(pending);
         };
         try {
             traceStartup(data.workerID, 'duckdb-factory-enter');
@@ -92,6 +82,9 @@ const handleMessage = (event: MessageEvent<any>): void => {
             console.error('[coi pthread] module initialization threw', data.workerID, error);
             throw error;
         }
+    } else if (data.cmd === 'duckdb-http-range-broker-ready') {
+        (globalThis as any).__duckdbCentralRangeBrokerReady = true;
+        traceStartup((pthread_api.getModule() as any)?.workerID ?? 0, 'central-range-broker-ready');
     } else if (data.cmd === 'registerFileHandle') {
         globalThis.DUCKDB_RUNTIME._files = globalThis.DUCKDB_RUNTIME._files || new Map();
         globalThis.DUCKDB_RUNTIME._files.set(data.fileName, data.fileHandle);
