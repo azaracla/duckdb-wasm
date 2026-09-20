@@ -24,9 +24,10 @@ try {
   status.version = version;
   status.checks.push('runtime initialization and DuckDB 2 version');
 
+  const rangeBase = new URL(location.href).searchParams.get('rangeBase');
   await db.open({
     path: ':memory:',
-    maximum_threads: 4,
+    maximum_threads: rangeBase !== null ? 2 : 4,
     filesystem: {
       reliableHeadRequests: true,
       allowFullHTTPReads: false,
