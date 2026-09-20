@@ -1,0 +1,49 @@
+name: DuckDB 2 alpha / DuckLake wasm_threads
+
+on:
+  push:
+    branches:
+      - feat/duckdb-2dev-async-http
+    paths:
+      - .github/workflows/duckdb-2dev-ducklake.yml
+      - tools/async-io/ducklake-wasm/**
+      - tools/async-io/pins.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha-ducklake-wasm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Build pinned DuckLake side module
+        shell: bash
+        run: |
+          set -euxo pipefail
+          out="$RUNNER_TEMP/ducklake-wasm"
+          mkdir -p "$out"
+          docker build             -f tools/async-io/ducklake-wasm/Dockerfile             --target artifact             --output "type=local,dest=$out"             tools/async-io/ducklake-wasm
+          test -s "$out/ducklake.duckdb_extension.wasm"
+          cat "$out/build-manifest.txt"
+          ls -lh "$out/ducklake.duckdb_extension.wasm"
+
+      - name: Upload DuckLake side module
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-ducklake-wasm-threads
+          path: |
+            ${{ runner.temp }}/ducklake-wasm/ducklake.duckdb_extension.wasm
+            ${{ runner.temp }}/ducklake-wasm/build-manifest.txt
+          if-no-files-found: error
+          retention-days: 3
