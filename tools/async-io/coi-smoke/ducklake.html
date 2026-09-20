@@ -4,11 +4,12 @@
 <body><pre id="result">DuckLake loading</pre>
 <script type="module">
 import * as duckdb from './duckdb-browser.mjs';
-const status = window.__ducklakeSmoke = { done: false, ok: false, checks: [] };
+const status = window.__ducklakeSmoke = { done: false, ok: false, stage: 'startup', checks: [] };
 let db;
 try {
   if (!crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') throw new Error('COOP/COEP and SharedArrayBuffer required');
   status.checks.push('crossOriginIsolated');
+  status.stage = 'instantiate DuckDB';
   const worker = new Worker('./duckdb-browser-coi.worker.js');
   db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
   await db.instantiate(new URL('./duckdb-coi.wasm', location.href).href,
@@ -16,10 +17,8 @@ try {
   status.version = await db.getVersion();
   if (!/2\.0\.0/.test(status.version)) throw new Error(`Wrong DuckDB version: ${status.version}`);
   status.checks.push('pinned DuckDB 2 runtime');
-  // DuckDBConfig uses maximumThreads (camelCase). Explicitly bound I/O threads
-  // so extension signature validation cannot exhaust the eight-pthread pool.
-  // allowUnsignedExtensions is TEST ONLY for the exact pinned locally built
-  // CI artifact. Never apply this flag to production or third-party URLs.
+  // Test-only trust bypass for exact pinned CI side module, not production.
+  status.stage = 'open bounded in-memory database';
   await db.open({ path: ':memory:', maximumThreads: 2, allowUnsignedExtensions: true,
     filesystem: { reliableHeadRequests: true, allowFullHTTPReads: false, forceFullHTTPReads: false } });
   const connection = await db.connect();
@@ -33,15 +32,19 @@ try {
     const before = await connection.query('SELECT 42 AS answer');
     if (Number(before.getChild('answer')?.get(0)) !== 42) throw new Error('SELECT 42 failed');
     status.checks.push('SQL before extension load');
+    status.stage = 'fetch and validate DuckLake side module';
     const response = await fetch('./ducklake.duckdb_extension.wasm', { cache: 'no-store' });
     if (!response.ok) throw new Error(`DuckLake artifact HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length) throw new Error('Empty DuckLake extension');
+    if (!bytes.length || !WebAssembly.validate(bytes)) throw new Error('Invalid or empty DuckLake WASM extension');
     status.extensionBytes = bytes.length;
+    status.checks.push('DuckLake WebAssembly.validate');
     await db.registerFileBuffer('ducklake.duckdb_extension', bytes);
     status.checks.push('DuckLake WASM side module registered with valid suffix');
+    status.stage = 'LOAD ducklake (dlopen / extension init)';
     await connection.query("LOAD 'ducklake.duckdb_extension'");
     status.checks.push('LOAD DuckLake in real Chromium WASM');
+    status.stage = 'verify duckdb_extensions';
     const extensions = await connection.query("SELECT extension_name, loaded FROM duckdb_extensions() WHERE extension_name = 'ducklake'");
     if (extensions.numRows !== 1 || extensions.getChild('loaded')?.get(0) !== true) {
       throw new Error('duckdb_extensions does not report ducklake as loaded');
@@ -50,10 +53,26 @@ try {
     const after = await connection.query('SELECT 42 AS answer');
     if (Number(after.getChild('answer')?.get(0)) !== 42) throw new Error('SQL after extension load failed');
     status.checks.push('SQL after extension load');
+
+    // The same local metadata+Parquet catalog SQL as DuckLake's pinned docs.
+    // This is the first product acceptance gate; remote HTTP A/B is separate.
+    status.stage = 'ATTACH local DuckLake catalog';
+    await connection.query("ATTACH 'ducklake:metadata.ducklake' AS lake (DATA_PATH 'lake-data/')");
+    status.checks.push('DuckLake ATTACH succeeded');
+    status.stage = 'CREATE DuckLake table';
+    await connection.query('CREATE TABLE lake.vessels (id INTEGER, mmsi BIGINT)');
+    status.stage = 'INSERT DuckLake Parquet rows';
+    await connection.query('INSERT INTO lake.vessels VALUES (1, 227123456), (2, 227654321)');
+    status.stage = 'query DuckLake table';
+    const rows = await connection.query('SELECT COUNT(*)::INTEGER AS n, SUM(id)::INTEGER AS total FROM lake.vessels');
+    status.ducklake = { count: Number(rows.getChild('n')?.get(0)), idSum: Number(rows.getChild('total')?.get(0)) };
+    if (status.ducklake.count !== 2 || status.ducklake.idSum !== 3) throw new Error(`Wrong DuckLake result: ${JSON.stringify(status.ducklake)}`);
+    status.checks.push('DuckLake ATTACH/CREATE/INSERT/SELECT end-to-end');
   } finally {
     await connection.close();
   }
   status.ok = true;
+  status.stage = 'completed';
 } catch (error) {
   status.error = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
   console.error('DUCKLAKE BROWSER FAILED', status.error);
