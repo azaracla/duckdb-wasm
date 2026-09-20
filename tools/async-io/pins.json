@@ -28,14 +28,20 @@
     "repository": "duckdb/ducklake",
     "candidate_ref": "eb7b95df82fc3ba0ace777e34ef1c81280477042",
     "upstream_duckdb_version_file": "c97bd8b96e0481b9e58d491f4fcd8599fccd65fb",
-    "status": "CANDIDATE ONLY: Serverless pins this DuckLake revision with APPLY_PATCHES for its native 2.0-alpha build. Its own duckdb-version is different from 43f897e5f3; compile explicitly against the pinned target and validate patches, source id, runtime load and browser queries before declaring WASM compatibility. AIS 8736cb23 pins v1.5.3 and must not be reused."
+    "status": "CANDIDATE UNDER WASM_THREADS BUILD: compile eb7b95df82fc3ba0ace777e34ef1c81280477042 against DuckDB 43f897e5f3446bde2b36cef5dc137eea14211fd9 with that core's DuckLake compatibility patches. Browser load/query is not yet validated."
   },
   "httpfs": {
     "native_serverless_ref": "984d576bc696248af5cc51f9ec4c2f2c8a9dbd1f",
     "serverless_wasm_quack_ref": "66c62f0f9897cf7a6de9a79b0a2ad555ff00fa87",
     "status": "Different native and Quack-WASM pins; verify DuckLake browser compatibility before selecting"
   },
-  "wasm_runtime_build": "NOT_BUILT_ON_THIS_BRANCH",
-  "browser_smoke": "NOT_RUN",
-  "http_range_parallelism": "NOT_VERIFIED"
+  "wasm_runtime_build": "VERIFIED COI/PTHREAD BUILD: DuckDB v2.0.0-dev1, bounded Emscripten pool=8, SELECT 42 and threads=1/2/4 browser smoke passed.",
+  "browser_smoke": "PASS for DuckDB 2 COI runtime and real Parquet SUM(id) scan; DuckLake extension/browser attach still pending.",
+  "http_range_parallelism": "VERIFIED: run 35526669568, one real DuckDB SUM(id) query produced 42 HTTP 206 Range GETs with max_overlapping_ranges=3 via the central async fetch broker.",
+  "ducklake_wasm_builder": {
+    "dockerfile": "tools/async-io/ducklake-wasm/Dockerfile",
+    "workflow": ".github/workflows/duckdb-2dev-ducklake.yml",
+    "first_run_id": 35527975819,
+    "status": "in progress at time of manifest update; artifact success not yet claimed"
+  }
 }
