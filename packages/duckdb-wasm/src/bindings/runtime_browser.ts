@@ -21,104 +21,16 @@ const OPFS_PREFIX_LEN = 'opfs://'.length;
 const PATH_SEP_REGEX = /\/|\\/;
 
 const HTTP_RANGE_BROKER_TIMEOUT_MS = 30_000;
-let HTTP_RANGE_BROKER: Worker | null = null;
-let HTTP_RANGE_BROKER_URL: string | null = null;
-let HTTP_RANGE_BROKER_READY = false;
-let HTTP_RANGE_BROKER_READY_PROMISE: Promise<void> | null = null;
-
-const HTTP_RANGE_BROKER_SOURCE = `
-self.postMessage({ type: 'ready' });
-self.onmessage = async ({ data }) => {
-    const started = performance.now();
-    console.log('[range-broker:start] parent=' + data.parentWorkerId + ' location=' + data.location + ' bytes=' + data.bytes + ' t0=' + started.toFixed(3));
-    const control = new Int32Array(data.control);
-    const finish = (state, status, responseBytes, errorCode) => {
-        Atomics.store(control, 1, status);
-        Atomics.store(control, 2, responseBytes);
-        Atomics.store(control, 3, errorCode);
-        Atomics.store(control, 0, state);
-        Atomics.notify(control, 0, 1);
-    };
-    try {
-        const last = data.location + data.bytes - 1;
-        const expected = 'bytes ' + data.location + '-' + last + '/';
-        const response = await fetch(data.url, {
-            headers: { Range: 'bytes=' + data.location + '-' + last },
-        });
-        const contentRange = response.headers.get('Content-Range');
-        if (response.status !== 206) {
-            finish(-1, response.status, 0, 2);
-            return;
-        }
-        if (!contentRange) {
-            finish(-1, response.status, 0, 3);
-            return;
-        }
-        if (!contentRange.startsWith(expected)) {
-            finish(-1, response.status, 0, 4);
-            return;
-        }
-        const body = new Uint8Array(await response.arrayBuffer());
-        if (body.byteLength !== data.bytes) {
-            finish(-1, response.status, body.byteLength, 5);
-            return;
-        }
-        new Uint8Array(data.heap, data.buf, data.bytes).set(body);
-        const ended = performance.now();
-        console.log('[range-broker:end] parent=' + data.parentWorkerId + ' location=' + data.location + ' bytes=' + data.bytes + ' status=' + response.status + ' t0=' + started.toFixed(3) + ' t1=' + ended.toFixed(3) + ' duration=' + (ended - started).toFixed(3));
-        finish(1, response.status, body.byteLength, 0);
-    } catch (error) {
-        console.error('[range-broker] fetch failed', error);
-        finish(-1, 0, 0, 1);
-    }
-};
-`;
 
 function canUseHTTPRangeBroker(mod: DuckDBModule): boolean {
     return (
         typeof SharedArrayBuffer !== 'undefined' &&
         mod.HEAPU8.buffer instanceof SharedArrayBuffer &&
-        typeof Worker !== 'undefined' &&
-        typeof window === 'undefined' &&
         typeof Atomics.wait === 'function' &&
-        HTTP_RANGE_BROKER_READY
+        typeof window === 'undefined' &&
+        (mod as any).ENVIRONMENT_IS_PTHREAD === true &&
+        (globalThis as any).__duckdbCentralRangeBrokerReady === true
     );
-}
-
-function getHTTPRangeBroker(): Worker {
-    if (HTTP_RANGE_BROKER) return HTTP_RANGE_BROKER;
-    HTTP_RANGE_BROKER_URL = URL.createObjectURL(new Blob([HTTP_RANGE_BROKER_SOURCE], { type: 'text/javascript' }));
-    HTTP_RANGE_BROKER = new Worker(HTTP_RANGE_BROKER_URL);
-    return HTTP_RANGE_BROKER;
-}
-
-export function prepareHTTPRangeBroker(): Promise<void> {
-    if (HTTP_RANGE_BROKER_READY) return Promise.resolve();
-    if (HTTP_RANGE_BROKER_READY_PROMISE) return HTTP_RANGE_BROKER_READY_PROMISE;
-    if (
-        typeof SharedArrayBuffer === 'undefined' ||
-        typeof Worker === 'undefined' ||
-        typeof window !== 'undefined'
-    ) {
-        return Promise.resolve();
-    }
-    const worker = getHTTPRangeBroker();
-    HTTP_RANGE_BROKER_READY_PROMISE = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('HTTP Range broker startup timed out')), 10_000);
-        const onMessage = (event: MessageEvent<any>) => {
-            if (event.data?.type !== 'ready') return;
-            clearTimeout(timeout);
-            worker.removeEventListener('message', onMessage);
-            HTTP_RANGE_BROKER_READY = true;
-            resolve();
-        };
-        worker.addEventListener('message', onMessage);
-        worker.addEventListener('error', (event: ErrorEvent) => {
-            clearTimeout(timeout);
-            reject(new Error(`HTTP Range broker startup failed: ${event.message}`));
-        }, { once: true });
-    });
-    return HTTP_RANGE_BROKER_READY_PROMISE;
 }
 
 function readHTTPRangeViaBroker(
@@ -136,9 +48,14 @@ function readHTTPRangeViaBroker(
             Math.random().toString(36).slice(2, 8);
     const started = performance.now();
     console.log(
-        `[range-broker:dispatch] parent=${parentWorkerId} location=${location} bytes=${bytes} t0=${started.toFixed(3)}`,
+        `[range-central:dispatch] parent=${parentWorkerId} location=${location} bytes=${bytes} t0=${started.toFixed(3)}`,
     );
-    getHTTPRangeBroker().postMessage({
+
+    // Every pthread posts to the Emscripten runtime worker that created it.
+    // That single parent owns the central async-fetch broker and can therefore
+    // launch requests from one JS event loop while this pthread sleeps.
+    globalThis.postMessage({
+        cmd: 'duckdb-http-range-request',
         url,
         buf,
         bytes,
@@ -150,7 +67,7 @@ function readHTTPRangeViaBroker(
 
     const waitResult = Atomics.wait(control, 0, 0, HTTP_RANGE_BROKER_TIMEOUT_MS);
     if (waitResult === 'timed-out') {
-        throw new Error(`HTTP Range broker timed out after ${HTTP_RANGE_BROKER_TIMEOUT_MS}ms`);
+        throw new Error(`Central HTTP Range broker timed out after ${HTTP_RANGE_BROKER_TIMEOUT_MS}ms`);
     }
     const state = Atomics.load(control, 0);
     const status = Atomics.load(control, 1);
@@ -164,11 +81,11 @@ function readHTTPRangeViaBroker(
             4: 'Content-Range mismatch',
             5: `response length mismatch: expected ${bytes}, got ${responseBytes}`,
         };
-        throw new Error(`HTTP Range broker failed: ${reasons[errorCode] || `error code ${errorCode}`}`);
+        throw new Error(`Central HTTP Range broker failed: ${reasons[errorCode] || `error code ${errorCode}`}`);
     }
     const ended = performance.now();
     console.log(
-        `[range-broker:return] parent=${parentWorkerId} location=${location} bytes=${bytes} t0=${started.toFixed(3)} t1=${ended.toFixed(3)} duration=${(ended - started).toFixed(3)}`,
+        `[range-central:return] parent=${parentWorkerId} location=${location} bytes=${bytes} t0=${started.toFixed(3)} t1=${ended.toFixed(3)} duration=${(ended - started).toFixed(3)}`,
     );
     return responseBytes;
 }
