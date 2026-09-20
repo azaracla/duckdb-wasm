@@ -20,6 +20,109 @@ import * as udf from './udf_runtime';
 const OPFS_PREFIX_LEN = 'opfs://'.length;
 const PATH_SEP_REGEX = /\/|\\/;
 
+const HTTP_RANGE_BROKER_TIMEOUT_MS = 30_000;
+let HTTP_RANGE_BROKER: Worker | null = null;
+let HTTP_RANGE_BROKER_URL: string | null = null;
+
+const HTTP_RANGE_BROKER_SOURCE = `
+self.onmessage = async ({ data }) => {
+    const control = new Int32Array(data.control);
+    const finish = (state, status, responseBytes, errorCode) => {
+        Atomics.store(control, 1, status);
+        Atomics.store(control, 2, responseBytes);
+        Atomics.store(control, 3, errorCode);
+        Atomics.store(control, 0, state);
+        Atomics.notify(control, 0, 1);
+    };
+    try {
+        const last = data.location + data.bytes - 1;
+        const expected = 'bytes ' + data.location + '-' + last + '/';
+        const response = await fetch(data.url, {
+            headers: { Range: 'bytes=' + data.location + '-' + last },
+        });
+        const contentRange = response.headers.get('Content-Range');
+        if (response.status !== 206) {
+            finish(-1, response.status, 0, 2);
+            return;
+        }
+        if (!contentRange) {
+            finish(-1, response.status, 0, 3);
+            return;
+        }
+        if (!contentRange.startsWith(expected)) {
+            finish(-1, response.status, 0, 4);
+            return;
+        }
+        const body = new Uint8Array(await response.arrayBuffer());
+        if (body.byteLength !== data.bytes) {
+            finish(-1, response.status, body.byteLength, 5);
+            return;
+        }
+        new Uint8Array(data.heap, data.buf, data.bytes).set(body);
+        finish(1, response.status, body.byteLength, 0);
+    } catch (error) {
+        console.error('[range-broker] fetch failed', error);
+        finish(-1, 0, 0, 1);
+    }
+};
+`;
+
+function canUseHTTPRangeBroker(mod: DuckDBModule): boolean {
+    return (
+        typeof SharedArrayBuffer !== 'undefined' &&
+        mod.HEAPU8.buffer instanceof SharedArrayBuffer &&
+        typeof Worker !== 'undefined' &&
+        typeof window === 'undefined' &&
+        typeof Atomics.wait === 'function'
+    );
+}
+
+function getHTTPRangeBroker(): Worker {
+    if (HTTP_RANGE_BROKER) return HTTP_RANGE_BROKER;
+    HTTP_RANGE_BROKER_URL = URL.createObjectURL(new Blob([HTTP_RANGE_BROKER_SOURCE], { type: 'text/javascript' }));
+    HTTP_RANGE_BROKER = new Worker(HTTP_RANGE_BROKER_URL);
+    return HTTP_RANGE_BROKER;
+}
+
+function readHTTPRangeViaBroker(
+    mod: DuckDBModule,
+    url: string,
+    buf: number,
+    bytes: number,
+    location: number,
+): number {
+    const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 4);
+    const control = new Int32Array(controlBuffer);
+    getHTTPRangeBroker().postMessage({
+        url,
+        buf,
+        bytes,
+        location,
+        heap: mod.HEAPU8.buffer,
+        control: controlBuffer,
+    });
+
+    const waitResult = Atomics.wait(control, 0, 0, HTTP_RANGE_BROKER_TIMEOUT_MS);
+    if (waitResult === 'timed-out') {
+        throw new Error(`HTTP Range broker timed out after ${HTTP_RANGE_BROKER_TIMEOUT_MS}ms`);
+    }
+    const state = Atomics.load(control, 0);
+    const status = Atomics.load(control, 1);
+    const responseBytes = Atomics.load(control, 2);
+    const errorCode = Atomics.load(control, 3);
+    if (state !== 1) {
+        const reasons: Record<number, string> = {
+            1: 'fetch failed',
+            2: `expected HTTP 206, got ${status}`,
+            3: 'missing Content-Range',
+            4: 'Content-Range mismatch',
+            5: `response length mismatch: expected ${bytes}, got ${responseBytes}`,
+        };
+        throw new Error(`HTTP Range broker failed: ${reasons[errorCode] || `error code ${errorCode}`}`);
+    }
+    return responseBytes;
+}
+
 export const BROWSER_RUNTIME: DuckDBRuntime & {
     _files: Map<string, any>;
     _fileInfoCache: Map<number, DuckDBFileInfo>;
@@ -632,6 +735,16 @@ export const BROWSER_RUNTIME: DuckDBRuntime & {
                         throw new Error(`Missing data URL for file ${fileId}`);
                     }
                     try {
+                        // DuckDB 2's ASYNC pool already submits independent reads in
+                        // parallel. Chromium serializes synchronous XHRs even across
+                        // dedicated workers in our COI acceptance environment, so for
+                        // pthread HTTP reads delegate the network transfer to a nested
+                        // async-fetch worker. The calling pthread sleeps on a tiny SAB
+                        // while the broker writes directly into shared WASM memory.
+                        if (file.dataProtocol === DuckDBDataProtocol.HTTP && canUseHTTPRangeBroker(mod)) {
+                            return readHTTPRangeViaBroker(mod, file.dataUrl, buf, bytes, location);
+                        }
+
                         const xhr = new XMLHttpRequest();
                         if (file.dataProtocol == DuckDBDataProtocol.S3) {
                             xhr.open('GET', getHTTPUrl(file?.s3Config, file.dataUrl!), false);
