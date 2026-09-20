@@ -124,7 +124,14 @@ class WebWorker extends AsyncDuckDBDispatcher {
     ): Promise<DuckDBBindings> {
         const bindings = new DuckDB(this, BROWSER_RUNTIME, mainModuleURL, pthreadWorkerURL);
         await bindings.instantiate(progress);
-        await installCentralRangeBroker(bindings);
+        const brokerDisabled =
+            pthreadWorkerURL != null &&
+            new URL(pthreadWorkerURL, globalThis.location?.href || undefined).searchParams.get('rangeBroker') === '0';
+        if (brokerDisabled) {
+            console.log('[range-network] benchmark baseline: central fetch broker disabled; using synchronous XHR transport');
+        } else {
+            await installCentralRangeBroker(bindings);
+        }
         return bindings;
     }
 }
