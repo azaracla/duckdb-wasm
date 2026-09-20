@@ -7,6 +7,85 @@
 import * as duckdb from './duckdb-browser.mjs';
 
 const status = window.__alphaSmoke = { done: false, ok: false, checks: [] };
+
+async function runSyncXHRBaseline(origin) {
+  const count = 4;
+  const bytes = 16384;
+  const workerSource = `
+    self.postMessage({ ready: true });
+    self.onmessage = ({ data }) => {
+      const xhr = new XMLHttpRequest();
+      let error = null;
+      let status = 0;
+      let responseBytes = 0;
+      let contentRange = null;
+      try {
+        xhr.open('GET', data.url, false);
+        xhr.responseType = 'arraybuffer';
+        xhr.setRequestHeader('Range', 'bytes=' + data.offset + '-' + (data.offset + data.bytes - 1));
+        xhr.send(null);
+        status = xhr.status;
+        responseBytes = xhr.response?.byteLength ?? 0;
+        contentRange = xhr.getResponseHeader('Content-Range');
+      } catch (e) {
+        error = String(e);
+      }
+      self.postMessage({ workerId: data.workerId, offset: data.offset, bytes: data.bytes, status, responseBytes, contentRange, error });
+    };
+  `;
+  const objectUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
+  const workers = [];
+  try {
+    const results = await new Promise((resolve, reject) => {
+      const samples = [];
+      let ready = 0;
+      let done = 0;
+      let finished = false;
+      const finish = (error) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(deadline);
+        if (error) reject(error); else resolve(samples);
+      };
+      const deadline = setTimeout(() => finish(new Error('sync XHR baseline timed out')), 10000);
+      for (let i = 0; i < count; i++) {
+        const worker = new Worker(objectUrl);
+        workers.push(worker);
+        worker.onerror = (event) => {
+          event.preventDefault();
+          finish(new Error(`sync XHR baseline worker failed: ${event.message}`));
+        };
+        worker.onmessage = ({ data }) => {
+          if (finished) return;
+          if (data.ready) {
+            ready++;
+            if (ready === count) {
+              for (let j = 0; j < count; j++) {
+                workers[j].postMessage({
+                  url: `${origin}/fixture.parquet`,
+                  workerId: j,
+                  offset: j * 65536,
+                  bytes,
+                });
+              }
+            }
+            return;
+          }
+          samples.push(data);
+          done++;
+          if (done === count) finish();
+        };
+      }
+    });
+    const response = await fetch(`${origin}/__trace`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`sync XHR baseline trace failed: HTTP ${response.status}`);
+    return { results, trace: await response.json() };
+  } finally {
+    for (const worker of workers) worker.terminate();
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 let db;
 try {
   if (!crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
@@ -64,6 +143,19 @@ try {
         throw new Error('Range fixture must be the local 127.0.0.1 HTTP origin');
       }
       const origin = base.origin;
+
+      // Independent control: four plain Web Workers issue synchronous XHR Range
+      // requests against the same threaded server. This is synthetic and can
+      // NEVER satisfy the DuckDB acceptance gate; it only tells us whether
+      // Chromium itself can overlap sync-XHRs in this exact COI environment.
+      const baselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
+      if (!baselineReset.ok) throw new Error(`Baseline trace reset failed: HTTP ${baselineReset.status}`);
+      try {
+        status.syncXHRBaseline = await runSyncXHRBaseline(origin);
+      } catch (error) {
+        status.syncXHRBaselineError = error instanceof Error ? error.message : String(error);
+      }
+
       // DuckDB 2 alpha WASM routes remote files through the browser filesystem.
       // Register the HTTP URL explicitly, then query the registered logical path.
       await db.registerFileURL(
