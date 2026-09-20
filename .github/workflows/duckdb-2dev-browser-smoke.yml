@@ -8,6 +8,10 @@ on:
     paths:
       - .github/workflows/duckdb-2dev-browser-smoke.yml
       - packages/duckdb-wasm/src/targets/duckdb-browser-coi.pthread.worker.ts
+      - packages/duckdb-wasm/src/targets/duckdb-browser-coi.worker.ts
+      - packages/duckdb-wasm/src/bindings/bindings_browser_coi.ts
+      - packages/duckdb-wasm/src/bindings/bindings_browser_base.ts
+      - tools/async-io/coi-smoke/**
   workflow_dispatch:
 
 permissions:
