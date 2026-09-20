@@ -1,0 +1,143 @@
+# Experimental COI runtime that keeps Parquet static while enabling DuckDB WASM side modules.
+# Kept separate from duckdb-2dev-coi.yml so the validated static runtime is unchanged.
+name: DuckDB 2 alpha / COI loadable
+
+on:
+  push:
+    branches:
+      - feat/duckdb-2dev-async-http
+    paths:
+      - .github/workflows/duckdb-2dev-coi-loadable.yml
+      - lib/**
+      - scripts/wasm_build_lib.sh
+      - tools/async-io/port_api.py
+      - tools/async-io/port_webdb_alpha.py
+      - tools/async-io/patch_webdb_config_alpha.py
+      - tools/async-io/patch_core_alpha.py
+      - tools/async-io/check_generated_coi.mjs
+      - tools/async-io/pins.json
+      - submodules/duckdb
+      - .gitmodules
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha-coi-loadable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 600M
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Fetch only C++ build submodules
+        shell: bash
+        run: |
+          git submodule update --init --depth 1 --jobs 4 --             submodules/duckdb submodules/arrow submodules/benchmark             submodules/gflags submodules/googletest submodules/rapidjson
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          pins = json.loads(Path('tools/async-io/pins.json').read_text())
+          actual = subprocess.check_output(['git', '-C', 'submodules/duckdb', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == pins['duckdb']['ref'], f'Wrong DuckDB revision: {actual}'
+          print('PASS: exact DuckDB 2 alpha source checkout', actual)
+          PY
+
+      - name: Apply source-checked 2.0 compatibility patches
+        shell: bash
+        run: |
+          python3 tools/async-io/port_api.py --apply
+          python3 tools/async-io/port_api.py --check
+          python3 tools/async-io/port_webdb_alpha.py --apply
+          python3 tools/async-io/port_webdb_alpha.py --check
+          python3 tools/async-io/patch_webdb_config_alpha.py --apply
+          python3 tools/async-io/patch_webdb_config_alpha.py --check
+          python3 tools/async-io/patch_core_alpha.py --apply
+          python3 tools/async-io/patch_core_alpha.py --check
+          git diff --check
+          git -C submodules/duckdb diff --check
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: '3.1.57'
+
+      - name: Install minimal build tools
+        shell: bash
+        run: |
+          if ! command -v ccache >/dev/null || ! command -v ninja >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ccache ninja-build
+          fi
+          npm install --global --no-audit --no-fund js-beautify@1.15.4
+          emcc --version | head -n 1
+
+      - name: Restore loadable COI compiler cache
+        id: ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: alpha-coi-loadable-emsdk-3.1.57-${{ runner.os }}-${{ hashFiles('lib/**', 'scripts/wasm_build_lib.sh', 'tools/async-io/port_api.py', 'tools/async-io/port_webdb_alpha.py', 'tools/async-io/patch_webdb_config_alpha.py', 'tools/async-io/patch_core_alpha.py') }}
+          restore-keys: |
+            alpha-coi-loadable-emsdk-3.1.57-${{ runner.os }}-
+            alpha-coi-emsdk-3.1.57-${{ runner.os }}-
+
+      - name: Build loadable COI runtime with static Parquet
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! (USE_GENERATED_EXPORTED_LIST=no                 DUCKDB_PLATFORM=wasm_threads                 DUCKDB_WASM_LOADABLE_EXTENSIONS=1                 DUCKDB_WASM_STATIC_PARQUET_WITH_LOADABLE=1                 GEN=ninja                 ./scripts/wasm_build_lib.sh dev coi > build-coi-loadable.log 2>&1); then
+            echo '::error::Loadable COI build failed.'
+            grep -n -E 'error:|fatal error:|undefined symbol|CMake Error' build-coi-loadable.log | tail -n 100 || true
+            tail -n 140 build-coi-loadable.log
+            exit 1
+          fi
+          tail -n 50 build-coi-loadable.log
+
+      - name: Save compiler cache
+        if: always() && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+
+      - name: Assert loadable-main-module outputs
+        shell: bash
+        run: |
+          for file in duckdb-coi.js duckdb-coi.wasm duckdb-coi.pthread.js; do
+            test -s "packages/duckdb-wasm/src/bindings/$file"
+          done
+          grep -q 'MAIN_MODULE' build-coi-loadable.log || true
+          node --check packages/duckdb-wasm/src/bindings/duckdb-coi.js
+          node tools/async-io/check_generated_coi.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
+
+      - name: Upload compiler log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-loadable-compiler-log
+          path: build-coi-loadable.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload loadable COI runtime
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-loadable-runtime
+          path: |
+            packages/duckdb-wasm/src/bindings/duckdb-coi.js
+            packages/duckdb-wasm/src/bindings/duckdb-coi.wasm
+            packages/duckdb-wasm/src/bindings/duckdb-coi.pthread.js
+          if-no-files-found: error
+          retention-days: 3
