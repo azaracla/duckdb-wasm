@@ -46,8 +46,7 @@ jobs:
           name: alpha-coi-loadable-runtime
           path: packages/duckdb-wasm/src/bindings
 
-      # Diagnostic side module built from the same pinned sources; traces
-      # DuckLakeInitializer stages to identify the intermittent ATTACH hang.
+      # Diagnostic side module built from the same pinned sources.
       - name: Download instrumented DuckLake wasm_threads side module
         uses: actions/download-artifact@v4
         with:
@@ -91,17 +90,24 @@ jobs:
           test -s "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension"
           cmp "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
 
-      - name: Chromium DuckDB 2 - LOAD pinned DuckLake and SQL acceptance
+      # Each invocation starts a new HTTP server, Chrome process, WASM runtime,
+      # DuckLake extension and in-memory catalog. Fail on the first bad run;
+      # keep that attempt's log for postmortem instead of masking flakiness.
+      - name: Chromium DuckLake stability gate - three independent launches
         shell: bash
         run: |
-          set -o pipefail
-          node tools/async-io/coi-smoke/ducklake-run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee ducklake-browser.log
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== DuckLake independent Chromium attempt ${attempt}/3 ==="
+            node tools/async-io/coi-smoke/ducklake-run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee "ducklake-browser-${attempt}.log"
+          done
+          echo 'PASS: three independent DuckLake Chromium launches and SQL acceptance'
 
       - name: Upload DuckLake browser diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: alpha-ducklake-browser-log
-          path: ducklake-browser.log
+          path: ducklake-browser-*.log
           if-no-files-found: warn
           retention-days: 5
