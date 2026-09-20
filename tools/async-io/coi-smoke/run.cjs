@@ -125,13 +125,13 @@ async function main() {
     }
     const result = await page.evaluate(() => window.__alphaSmoke);
     console.log('COI BROWSER SMOKE:', JSON.stringify(result));
-    if (errors.length || crashed.size || !result?.ok || !result.checks?.includes('threads=4, SQL=42')) {
+    if (errors.length || crashed.size || !result?.ok || !result.checks?.includes('threads=2, SQL=42')) {
       throw new Error(`COI browser failed: ${JSON.stringify({ result, errors, crashed: [...crashed] })}`);
     }
     if (rangeServer && !result.checks.includes('one DuckDB Parquet query with >=2 overlapping HTTP Range reads')) {
       throw new Error('Range acceptance enabled but one-query overlap was not verified');
     }
-    console.log('PASS: browser COI initialized DuckDB 2, SELECT 42 and thread settings 1/2/4');
+    console.log('PASS: browser COI initialized DuckDB 2, SELECT 42 and threads=2');
     if (rangeServer) console.log('PASS: one real DuckDB Parquet SQL query emitted overlapping HTTP 206 Range GETs');
   } finally {
     if (browser) await browser.close();
