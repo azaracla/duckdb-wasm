@@ -92,11 +92,18 @@ fi
 
 js-beautify -v || npm install -g js-beautify
 js-beautify ${BUILD_DIR}/duckdb_wasm.js > ${BUILD_DIR}/beauty.js
-sed 's/case \"__table_base\"/case \"getTempRet0\": return getTempRet0;   case \"__table_base\"/g' ${BUILD_DIR}/beauty.js > ${BUILD_DIR}/beauty_sed.js
+sed 's/case "__table_base"/case "getTempRet0": return getTempRet0;   case "__table_base"/g' ${BUILD_DIR}/beauty.js > ${BUILD_DIR}/beauty_sed.js
 cp ${BUILD_DIR}/beauty_sed.js ${BUILD_DIR}/beauty.js
 cp ${BUILD_DIR}/beauty.js ${BUILD_DIR}/duckdb_wasm.js
 awk '{gsub(/get\(stubs, prop\) \{/,"get(stubs,prop) { if (prop.startsWith(\"invoke_\")) {return createDyncallWrapper(prop.substring(7));}"); print}' ${BUILD_DIR}/beauty.js > ${BUILD_DIR}/beauty2.js
-awk '!(/var .*wasmExports\[/ || /var [_a-z0-9A-Z]+ = Module\[\"[_a-z0-9A-Z]+\"\] = [0-9]+;/) || /var _duckdb_web/ || /var _main/ || /var _calloc/ || /var _malloc/ || /var _free/ || /var stack/ || /var ___dl_seterr/ || /var __em/ || /var _em/ || /var _pthread/' ${BUILD_DIR}/beauty2.js > ${BUILD_DIR}/duckdb_wasm.js
+
+# Preserve all Emscripten-generated WASM export bindings. The old awk filter
+# removed every `var ... = wasmExports[...]` declaration except a small
+# allowlist, including the binding of `f` inside createExportWrapper and
+# `___trap`. That produced three non-empty artifacts but a runtime that
+# immediately crashed with ReferenceError: f is not defined. Removing these
+# declarations is not a safe size optimization.
+cp ${BUILD_DIR}/beauty2.js ${BUILD_DIR}/duckdb_wasm.js
 
 cp ${BUILD_DIR}/duckdb_wasm.wasm ${DUCKDB_LIB_DIR}/duckdb${SUFFIX}.wasm
 sed \
