@@ -56,13 +56,18 @@ try {
         throw new Error('Range fixture must be the local 127.0.0.1 HTTP origin');
       }
       const origin = base.origin;
-      // Use the browser HTTP transport compiled into duckdb-wasm. This avoids
-      // external httpfs autoload while still exercising DuckDB's real HTTP path.
-      await connection.query("SET builtin_httpfs=true");
+      // DuckDB 2 alpha WASM routes remote files through the browser filesystem.
+      // Register the HTTP URL explicitly, then query the registered logical path.
+      await db.registerFileURL(
+        'fixture.parquet',
+        `${origin}/fixture.parquet`,
+        duckdb.DuckDBDataProtocol.HTTP,
+        false,
+      );
       const reset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
       if (!reset.ok) throw new Error(`Trace reset failed: HTTP ${reset.status}`);
       // This HTTP URL is derived only from the validated local origin above.
-      const query = `SELECT COUNT(*) AS row_count FROM read_parquet('${origin}/fixture.parquet')`;
+      const query = "SELECT COUNT(*) AS row_count FROM read_parquet('fixture.parquet')";
       const startedAt = performance.now();
       const rows = await connection.query(query);
       status.parquet = { rowCount: String(rows.getChild('row_count')?.get(0)), queryMs: performance.now() - startedAt };
