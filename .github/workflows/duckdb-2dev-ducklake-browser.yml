@@ -9,6 +9,7 @@ on:
       - .github/workflows/duckdb-2dev-ducklake-browser.yml
       - tools/async-io/coi-smoke/ducklake.html
       - tools/async-io/coi-smoke/ducklake-run.cjs
+      - tools/async-io/coi-smoke/instrument-ducklake.mjs
       - tools/async-io/coi-smoke/build.mjs
       - tools/async-io/coi-smoke/serve.py
       - packages/duckdb-wasm/src/targets/duckdb-browser-coi.worker.ts
@@ -77,12 +78,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Instrument only the downloaded disposable JavaScript, never the
+          # pinned source or the ordinary COI performance build.
+          node tools/async-io/coi-smoke/instrument-ducklake.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
           node tools/async-io/coi-smoke/build.mjs "$RUNNER_TEMP/coi-site"
           cp tools/async-io/coi-smoke/ducklake.html "$RUNNER_TEMP/coi-site/ducklake.html"
           cp "$RUNNER_TEMP/ducklake-artifact/ducklake.duckdb_extension.wasm" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
-          # The pinned DuckDB 2 WASM loader does a synchronous XHR using the
-          # filename itself in EM_ASM before dlopen. Serve those same bytes at
-          # the suffix-validated URL as well as the canonical build artifact.
+          # The pinned loader uses synchronous XHR on the suffix-validated URL.
           cp "$RUNNER_TEMP/ducklake-artifact/ducklake.duckdb_extension.wasm" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension"
           test -s "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension"
           cmp "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
