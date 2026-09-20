@@ -7,6 +7,7 @@ on:
       - feat/duckdb-2dev-async-http
     paths:
       - .github/workflows/duckdb-2dev-browser-smoke.yml
+      - packages/duckdb-wasm/src/targets/duckdb-browser-coi.pthread.worker.ts
   workflow_dispatch:
 
 permissions:
