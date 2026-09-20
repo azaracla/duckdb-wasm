@@ -129,6 +129,12 @@ jobs:
             }
           done
 
+      - name: Verify generated JS is syntactically valid and retains required exports
+        shell: bash
+        run: |
+          node --check packages/duckdb-wasm/src/bindings/duckdb-coi.js
+          node tools/async-io/check_generated_coi.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
+
       - name: Upload compiler log (success or failure)
         if: always()
         uses: actions/upload-artifact@v4
@@ -138,7 +144,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 2
 
-      - name: Upload COI runtime (only after successful build)
+      - name: Upload COI runtime (only after successful build and glue checks)
         if: success()
         uses: actions/upload-artifact@v4
         with:
