@@ -1,5 +1,4 @@
-# Integration gate: reuse separately verified pinned DuckDB 2 loadable runtime and
-# DuckLake wasm_threads side-module artifacts. Never rebuild C++ in browser CI.
+# Chromium integration gate: reuse the pinned compiled artifacts, never recompile C++.
 name: DuckDB 2 alpha / DuckLake browser
 
 on:
@@ -37,7 +36,7 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Download verified DuckDB 2 loadable COI runtime (run 35528908281)
+      - name: Download verified DuckDB 2 loadable COI runtime
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
@@ -45,7 +44,7 @@ jobs:
           name: alpha-coi-loadable-runtime
           path: packages/duckdb-wasm/src/bindings
 
-      - name: Download pinned DuckLake wasm_threads side module (run 35528049778)
+      - name: Download pinned DuckLake wasm_threads side module
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
@@ -81,7 +80,12 @@ jobs:
           node tools/async-io/coi-smoke/build.mjs "$RUNNER_TEMP/coi-site"
           cp tools/async-io/coi-smoke/ducklake.html "$RUNNER_TEMP/coi-site/ducklake.html"
           cp "$RUNNER_TEMP/ducklake-artifact/ducklake.duckdb_extension.wasm" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
-          test -s "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
+          # The pinned DuckDB 2 WASM loader does a synchronous XHR using the
+          # filename itself in EM_ASM before dlopen. Serve those same bytes at
+          # the suffix-validated URL as well as the canonical build artifact.
+          cp "$RUNNER_TEMP/ducklake-artifact/ducklake.duckdb_extension.wasm" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension"
+          test -s "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension"
+          cmp "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
 
       - name: Chromium DuckDB 2 - LOAD pinned DuckLake and SQL acceptance
         shell: bash
