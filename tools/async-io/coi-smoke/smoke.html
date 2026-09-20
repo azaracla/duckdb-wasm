@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>DuckDB 2 COI SQL smoke</title></head>
+<body>
+<pre id="result">COI SQL smoke running</pre>
+<script type="module">
+import * as duckdb from './duckdb-browser.mjs';
+
+const status = window.__alphaSmoke = { done: false, ok: false, checks: [] };
+let db;
+try {
+  if (!crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+    throw new Error('COOP/COEP isolation and SharedArrayBuffer are required');
+  }
+  status.checks.push('crossOriginIsolated');
+  const worker = new Worker('./duckdb-browser-coi.worker.js');
+  db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+  await db.instantiate(
+    new URL('./duckdb-coi.wasm', location.href).href,
+    new URL('./duckdb-browser-coi.pthread.worker.js', location.href).href,
+  );
+  const version = await db.getVersion();
+  if (!/2\.0\.0/.test(version)) throw new Error(`Unexpected DuckDB version: ${version}`);
+  status.version = version;
+  status.checks.push('runtime initialization and DuckDB 2 version');
+
+  await db.open({ path: ':memory:', maximum_threads: 4 });
+  const connection = await db.connect();
+  try {
+    const scalar = await connection.query('SELECT 42 AS answer');
+    const value = scalar.getChild('answer')?.get(0);
+    if (Number(value) !== 42) throw new Error(`SELECT 42 returned ${String(value)}`);
+    status.checks.push('SELECT 42');
+
+    // This verifies DuckDB honours 1/2/4 thread settings; it does not prove
+    // simultaneous HTTP Range requests. That remains a separate test gate.
+    for (const count of [1, 2, 4]) {
+      await connection.query(`SET threads=${count}`);
+      const result = await connection.query("SELECT current_setting('threads')::INTEGER AS configured_threads, 42 AS answer");
+      const observed = Number(result.getChild('configured_threads')?.get(0));
+      const answer = Number(result.getChild('answer')?.get(0));
+      if (observed !== count || answer !== 42) {
+        throw new Error(`threads=${count}: observed ${observed}, SELECT returned ${answer}`);
+      }
+      status.checks.push(`threads=${count}, SQL=42`);
+    }
+  } finally {
+    await connection.close();
+  }
+  status.ok = true;
+} catch (error) {
+  status.error = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
+  console.error('COI SMOKE FAILED', status.error);
+} finally {
+  if (db) {
+    try { await db.terminate(); } catch (error) { console.error('terminate failed', error); }
+  }
+  status.done = true;
+  document.querySelector('#result').textContent = JSON.stringify(status, null, 2);
+  console.log('COI SMOKE RESULT', JSON.stringify(status));
+}
+</script>
+</body>
+</html>
