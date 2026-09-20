@@ -37,14 +37,13 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      # Build 35532334895 successfully compiled the COI runtime with the
-      # guarded async_threads=2 configuration applied before DB construction.
-      # Never silently use the earlier uncapped build 35528908281 here.
-      - name: Download pre-open async-capped DuckDB 2 loadable COI runtime
+      # Build 35534038014 keeps the pre-open async thread cap and also
+      # registers the statically linked Parquet extension in loadable mode.
+      - name: Download async-capped DuckDB 2 loadable COI runtime with static Parquet
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: '35532334895'
+          run-id: '35534038014'
           name: alpha-coi-loadable-runtime
           path: packages/duckdb-wasm/src/bindings
 
