@@ -183,6 +183,32 @@ jobs:
           if-no-files-found: warn
           retention-days: 5
 
+      - name: Benchmark sync-XHR vs async-fetch broker
+        shell: bash
+        env:
+          ALPHA_PARQUET_FIXTURE: ${{ runner.temp }}/async-io-fixture.parquet
+          ALPHA_RANGE_REPEAT: "5"
+          ALPHA_RANGE_CONTROLS: "0"
+        run: |
+          set -euo pipefail
+          : > browser-benchmark.log
+          for delay in 0 150; do
+            for transport in sync-xhr broker; do
+              echo "=== benchmark delay_ms=$delay transport=$transport ===" | tee -a browser-benchmark.log
+              ALPHA_RANGE_DELAY_MS="$delay" ALPHA_RANGE_TRANSPORT="$transport" \
+                node tools/async-io/coi-smoke/run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee -a browser-benchmark.log
+            done
+          done
+
+      - name: Upload browser benchmark
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-browser-io-benchmark
+          path: browser-benchmark.log
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload browser smoke diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
