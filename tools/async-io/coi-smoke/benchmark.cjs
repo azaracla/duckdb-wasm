@@ -83,18 +83,26 @@ function sampleSignature(sample) {
 }
 
 function selectComparableCohort(left, right) {
-  const counts = new Map();
-  for (const sample of [...left, ...right]) {
+  const leftCounts = new Map();
+  const rightCounts = new Map();
+  for (const sample of left) {
     const signature = sampleSignature(sample);
-    counts.set(signature, (counts.get(signature) || 0) + 1);
+    leftCounts.set(signature, (leftCounts.get(signature) || 0) + 1);
   }
-  const common = [...counts.entries()]
-    .filter(([signature]) =>
-      left.some(sample => sampleSignature(sample) === signature) &&
-      right.some(sample => sampleSignature(sample) === signature))
-    .sort((a, b) => b[1] - a[1]);
+  for (const sample of right) {
+    const signature = sampleSignature(sample);
+    rightCounts.set(signature, (rightCounts.get(signature) || 0) + 1);
+  }
+  const common = [...leftCounts.keys()]
+    .filter(signature => rightCounts.has(signature))
+    .map(signature => ({
+      signature,
+      pairedCount: Math.min(leftCounts.get(signature), rightCounts.get(signature)),
+      totalCount: leftCounts.get(signature) + rightCounts.get(signature),
+    }))
+    .sort((a, b) => b.pairedCount - a.pairedCount || b.totalCount - a.totalCount);
   if (!common.length) return null;
-  const signature = common[0][0];
+  const signature = common[0].signature;
   const [rangeGets, transferredBytes] = signature.split(':').map(Number);
   const baselineSamples = left.filter(sample => sampleSignature(sample) === signature);
   const brokerSamples = right.filter(sample => sampleSignature(sample) === signature);
@@ -102,6 +110,7 @@ function selectComparableCohort(left, right) {
     signature: { rangeGets, transferredBytes },
     baselineSamples,
     brokerSamples,
+    pairedRepetitions: Math.min(baselineSamples.length, brokerSamples.length),
     baseline: summarize(baselineSamples),
     broker: summarize(brokerSamples),
   };
@@ -213,6 +222,7 @@ async function main() {
       },
       comparableCohort: comparable ? {
         signature: comparable.signature,
+        pairedRepetitions: comparable.pairedRepetitions,
         baseline: comparable.baseline,
         broker: comparable.broker,
         speedup: comparableSpeedup,
@@ -224,13 +234,13 @@ async function main() {
     fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
     console.log(`Benchmark report written to ${output}`);
     if (delayMs >= 100) {
-      if (!comparable || comparable.baseline.repetitions < 2 || comparable.broker.repetitions < 2) {
+      if (!comparable || comparable.pairedRepetitions < 2) {
         throw new Error('Latency benchmark needs at least two comparable samples per transport');
       }
       if (comparableSpeedup.median < 1.5) {
         throw new Error(`Expected latency-bound median speedup >= 1.5x, got ${comparableSpeedup.median.toFixed(3)}x`);
       }
-    } else if (comparable && comparable.baseline.repetitions >= 2 && comparable.broker.repetitions >= 2) {
+    } else if (comparable && comparable.pairedRepetitions >= 2) {
       const regression = comparable.broker.medianMs / comparable.baseline.medianMs;
       if (regression > 1.10) {
         throw new Error(`Zero-latency comparable median regressed by more than 10%: ${regression.toFixed(3)}x baseline`);
