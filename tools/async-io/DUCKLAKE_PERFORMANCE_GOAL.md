@@ -23,8 +23,12 @@ This goal takes priority over any one mechanism: EH/single-WASM-thread, JSPI/Asy
 - Keep the pinned DuckDB 2 source and signatures; do not silently revert to DuckDB 1 or disable threading in a claimed COI build. Avoid large 32-pthread preloads merely to mask initialization failures; diagnose workers and resource usage separately.
 - Keep the expensive COI compiler workflow scoped to C++/WASM-affecting files. Browser smoke tests should reuse a compiler-success artifact and run on JS/TS/harness changes without another C++ build. Keep tests that do not prove the final performance objective labelled as preliminary.
 
-## Current status at recording
+## Current status
 
-The experimental DuckDB 2 COI binary has compiled and been uploaded, but browser initialization stalled at `loading-workers`, with headless Chromium subsequently crashing. The 32-pthread experiment and a pthread wrapper protocol adjustment have not demonstrated a working `SELECT 42`, HTTP Range overlap or DuckLake speedup. The choice of EH vs COI is therefore open; pursue the lowest-complexity route that proves actual concurrent remote I/O first.
+As of 2026-09-20, the bounded 8-pthread COI runtime has passed real Chromium initialization with the pinned DuckDB 2 alpha, `SELECT 42`, and `threads=1/2/4`. Parquet is statically linked for the experimental acceptance build, and a real remote Parquet query through the browser filesystem has returned the correct result.
+
+The first instrumented remote Parquet run is a **negative concurrency result**: run `35523765282` completed `COUNT(*) = 200000` but downloaded the 1,077,564-byte file in one HTTP 200 GET with no Range header, so `completed_range_gets=0` and `max_overlapping_ranges=0`. Investigation found that an unset browser filesystem setting is serialized as `forceFullHttpReads=true`; the acceptance harness now explicitly disables full reads and full-read fallback. This has not yet proven Range overlap and does not yet satisfy milestone 3.
+
+The immediate next gate is unchanged: the same single DuckDB SQL query must produce at least two overlapping HTTP 206 Range GETs. If Range requests appear but remain serial, the next work is to trace and configure DuckDB 2 `async_threads`, `read_ahead_depth`, and Parquet read-ahead task routing in the pinned build. No DuckLake performance claim is valid before that evidence.
 
 **Definition of done:** a reproducible DuckDB 2 browser-WASM build, trace-backed proof of overlapping Range reads made by DuckDB, a real successful DuckLake query, and benchmark evidence of the latency benefit or a documented negative result. Keep this objective through any future branch or architecture change.
