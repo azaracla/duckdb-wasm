@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+'use strict';
+/** Headless Chrome smoke on the *real* COI worker bundles, not a mocked WASM API. */
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+
+const deps = process.env.ALPHA_SMOKE_DEPS;
+if (!deps) throw new Error('ALPHA_SMOKE_DEPS is required');
+const puppeteer = require(path.join(path.resolve(deps), 'node_modules/puppeteer-core'));
+const dir = path.resolve(process.argv[2] || 'build/dev/coi-smoke');
+const port = Number(process.env.ALPHA_SMOKE_PORT || 8766);
+const url = `http://127.0.0.1:${port}/smoke.html`;
+const script = path.join(__dirname, 'serve.py');
+const candidates = [process.env.CHROME_BIN, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+const chrome = candidates.find(binary => binary && fs.existsSync(binary));
+if (!chrome) throw new Error('No installed Chrome/Chromium found; do not silently skip browser validation');
+
+async function main() {
+  const server = spawn('python3', [script, dir, '--port', String(port)], { stdio: 'inherit' });
+  let browser;
+  try {
+    let ready = false;
+    for (let i = 0; i < 100; i++) {
+      if (server.exitCode !== null) throw new Error(`COI smoke server exited with ${server.exitCode}`);
+      try {
+        const response = await fetch(url);
+        if (response.ok) { ready = true; break; }
+      } catch { /* server not listening yet */ }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (!ready) throw new Error('COI smoke server did not start');
+    browser = await puppeteer.launch({
+      executablePath: chrome,
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-proxy-server'],
+    });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('console', message => console.log(`[chrome ${message.type()}] ${message.text()}`));
+    page.on('pageerror', error => { errors.push(String(error)); console.error('[chrome pageerror]', error); });
+    page.on('error', error => { errors.push(String(error)); console.error('[chrome error]', error); });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForFunction(() => window.__alphaSmoke?.done === true, { timeout: 180000 });
+    const result = await page.evaluate(() => window.__alphaSmoke);
+    console.log('COI BROWSER SMOKE:', JSON.stringify(result));
+    if (errors.length || !result?.ok || !result.checks?.includes('threads=4, SQL=42')) {
+      throw new Error(`COI browser failed: ${JSON.stringify({ result, errors })}`);
+    }
+    console.log('PASS: browser COI initialized DuckDB 2, SELECT 42 and thread settings 1/2/4');
+  } finally {
+    if (browser) await browser.close();
+    server.kill('SIGTERM');
+  }
+}
+
+main().catch(error => { console.error(error.stack || error); process.exitCode = 1; });
