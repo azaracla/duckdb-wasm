@@ -148,6 +148,41 @@ jobs:
           set -o pipefail
           node tools/async-io/coi-smoke/run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee browser-smoke.log
 
+      - name: Benchmark A/B — 150 ms remote-latency model
+        shell: bash
+        env:
+          ALPHA_PARQUET_FIXTURE: ${{ runner.temp }}/async-io-fixture.parquet
+          ALPHA_RANGE_DELAY_MS: "150"
+          ALPHA_BENCH_REPETITIONS: "5"
+          ALPHA_BENCHMARK_OUT: ${{ runner.temp }}/async-io-benchmark-150ms.json
+        run: |
+          set -o pipefail
+          node tools/async-io/coi-smoke/benchmark.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee browser-benchmark-150ms.log
+
+      - name: Benchmark A/B — zero injected latency
+        shell: bash
+        env:
+          ALPHA_PARQUET_FIXTURE: ${{ runner.temp }}/async-io-fixture.parquet
+          ALPHA_RANGE_DELAY_MS: "0"
+          ALPHA_BENCH_REPETITIONS: "5"
+          ALPHA_BENCHMARK_OUT: ${{ runner.temp }}/async-io-benchmark-0ms.json
+        run: |
+          set -o pipefail
+          node tools/async-io/coi-smoke/benchmark.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee browser-benchmark-0ms.log
+
+      - name: Upload browser benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-browser-benchmark
+          path: |
+            ${{ runner.temp }}/async-io-benchmark-150ms.json
+            ${{ runner.temp }}/async-io-benchmark-0ms.json
+            browser-benchmark-150ms.log
+            browser-benchmark-0ms.log
+          if-no-files-found: warn
+          retention-days: 5
+
       - name: Upload browser smoke diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
