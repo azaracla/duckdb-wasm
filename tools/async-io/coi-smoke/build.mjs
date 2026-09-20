@@ -49,6 +49,24 @@ function guardNodeOnlyRequire(filename, moduleName) {
 guardNodeOnlyRequire('duckdb-coi.js', 'child_process');
 guardNodeOnlyRequire('duckdb-coi.pthread.js', 'vm');
 
+// The previous browser run proved that worker 1 enters DuckDB(Module), but it
+// never returned or reached instantiateWasm. Probe only this worker at stable
+// checkpoints inside the *downloaded generated JS*, before esbuild bundles it.
+// These are smoke-only changes, not patches to the WASM or production runtime.
+const generatedJS = path.join(bindings, 'duckdb-coi.js');
+let generated = fs.readFileSync(generatedJS, 'utf8');
+const checkpoint = (stage) => `if (ENVIRONMENT_IS_PTHREAD && Module["workerID"] === 1) postMessage({ cmd: "coi-startup-worker-1:${stage}" });`;
+for (const [needle, replacement] of [
+  ['var Module = moduleArg;', `var Module = moduleArg;\n            ${checkpoint('generated-factory-start')}`],
+  ['var wasmExports = createWasm();', `${checkpoint('generated-before-createWasm')}\n            var wasmExports = createWasm();\n            ${checkpoint('generated-after-createWasm')}`],
+  ['var shouldRunNow = true;', `${checkpoint('generated-before-run-setup')}\n            var shouldRunNow = true;`],
+]) {
+  const occurrences = generated.split(needle).length - 1;
+  if (occurrences !== 1) throw new Error(`Generated COI checkpoint ${needle}: expected 1 occurrence, found ${occurrences}`);
+  generated = generated.replace(needle, replacement);
+}
+fs.writeFileSync(generatedJS, generated);
+
 const common = {
   platform: 'browser',
   bundle: true,
