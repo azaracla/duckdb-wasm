@@ -135,7 +135,7 @@ async function main() {
     if (rangeServer && transport === 'broker' && !result.checks.includes('one DuckDB Parquet query with >=2 overlapping HTTP Range reads')) {
       throw new Error('Range acceptance enabled but one-query overlap was not verified');
     }
-    if (rangeServer && transport === 'sync-xhr' && !result.checks.includes('DuckDB Parquet sync-XHR transport baseline')) {
+    if (rangeServer && transport === 'sync-xhr' && !result.checks.includes('one DuckDB Parquet query with serialized HTTP Range reads')) {
       throw new Error('Sync-XHR benchmark baseline did not complete');
     }
     console.log('PASS: browser COI initialized DuckDB 2, SELECT 42 and threads=2');
