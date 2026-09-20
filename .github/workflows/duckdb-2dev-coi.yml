@@ -99,9 +99,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          # Keep Parquet statically linked for the browser async-I/O acceptance
+          # gate. Enabling DUCKDB_WASM_LOADABLE_EXTENSIONS excludes
+          # duckdb_web_parquet from duckdb_web and makes read_parquet() attempt
+          # an unsupported network autoload of parquet.duckdb_extension.wasm.
           if ! (USE_GENERATED_EXPORTED_LIST=no \
                 DUCKDB_PLATFORM=wasm_threads \
-                DUCKDB_WASM_LOADABLE_EXTENSIONS=signed \
                 GEN=ninja \
                 ./scripts/wasm_build_lib.sh dev coi > build-coi.log 2>&1); then
             echo '::error::COI build failed. The log artifact contains the full compiler output.'
