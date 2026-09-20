@@ -57,3 +57,9 @@ jobs:
 
       - name: HTTP Range and generated COI glue regression tests
         run: node --test tools/async-io/*.test.mjs
+
+      - name: Syntax-check targeted Chrome harness (no deps, no browser)
+        run: |
+          node --check tools/async-io/coi-smoke/build.mjs
+          node --check tools/async-io/coi-smoke/run.cjs
+          python3 -m py_compile tools/async-io/coi-smoke/serve.py
