@@ -55,8 +55,10 @@ async function main() {
       headless: true,
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-proxy-server'],
     });
-    // Nested pthreads are not necessarily surfaced by Puppeteer's targetcreated.
-    const browserCDP = await browser.createBrowserCDPSession();
+    // puppeteer-core@22.8.0 exposes CDP sessions via Target.createCDPSession(),
+    // not Browser.createBrowserCDPSession() (which caused the previous CI failure).
+    // The browser target sees nested worker targets that Puppeteer's targetcreated may omit.
+    const browserCDP = await browser.target().createCDPSession();
     const discovered = new Map();
     const crashed = new Set();
     browserCDP.on('Target.targetCreated', ({ targetInfo }) => {
