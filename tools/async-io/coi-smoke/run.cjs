@@ -10,34 +10,52 @@ if (!deps) throw new Error('ALPHA_SMOKE_DEPS is required');
 const puppeteer = require(path.join(path.resolve(deps), 'node_modules/puppeteer-core'));
 const dir = path.resolve(process.argv[2] || 'build/dev/coi-smoke');
 const port = Number(process.env.ALPHA_SMOKE_PORT || 8766);
-const url = `http://127.0.0.1:${port}/smoke.html`;
+const baseURL = `http://127.0.0.1:${port}/smoke.html`;
 const script = path.join(__dirname, 'serve.py');
 const candidates = [process.env.CHROME_BIN, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
 const chrome = candidates.find(binary => binary && fs.existsSync(binary));
 if (!chrome) throw new Error('No installed Chrome/Chromium found; do not silently skip browser validation');
 
+async function waitForServer(url, server) {
+  for (let i = 0; i < 100; i++) {
+    if (server.exitCode !== null) throw new Error(`Smoke server exited with ${server.exitCode}: ${url}`);
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+    } catch { /* server not listening yet */ }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Smoke server did not start: ${url}`);
+}
+
 async function main() {
   const server = spawn('python3', [script, dir, '--port', String(port)], { stdio: 'inherit' });
+  let rangeServer;
   let browser;
   try {
-    let ready = false;
-    for (let i = 0; i < 100; i++) {
-      if (server.exitCode !== null) throw new Error(`COI smoke server exited with ${server.exitCode}`);
-      try {
-        const response = await fetch(url);
-        if (response.ok) { ready = true; break; }
-      } catch { /* server not listening yet */ }
-      await new Promise(resolve => setTimeout(resolve, 100));
+    await waitForServer(baseURL, server);
+    let url = baseURL;
+    // This gate is OPT-IN. Never count synthetic fetches as DuckDB concurrency.
+    // Supply an actual local Parquet fixture with multiple row groups/chunks.
+    if (process.env.ALPHA_PARQUET_FIXTURE) {
+      const fixture = path.resolve(process.env.ALPHA_PARQUET_FIXTURE);
+      if (!fs.statSync(fixture).isFile()) throw new Error(`Not a Parquet fixture: ${fixture}`);
+      const rangePort = Number(process.env.ALPHA_RANGE_PORT || 8767);
+      if (rangePort === port) throw new Error('Range fixture and smoke site need separate ports');
+      const rangeOrigin = `http://127.0.0.1:${rangePort}`;
+      rangeServer = spawn('python3', [path.join(__dirname, '../range_trace_server.py'), '--file', fixture, '--port', String(rangePort), '--delay-ms', String(Number(process.env.ALPHA_RANGE_DELAY_MS || 100))], { stdio: 'inherit' });
+      await waitForServer(`${rangeOrigin}/__trace`, rangeServer);
+      url += `?rangeBase=${encodeURIComponent(rangeOrigin + '/')}`;
+      console.log(`[range acceptance] enabled for fixture ${fixture}; SQL origin ${rangeOrigin}`);
+    } else {
+      console.log('[range acceptance] NOT RUN: set ALPHA_PARQUET_FIXTURE to enable real DuckDB Parquet SQL overlap validation');
     }
-    if (!ready) throw new Error('COI smoke server did not start');
     browser = await puppeteer.launch({
       executablePath: chrome,
       headless: true,
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-proxy-server'],
     });
-    // Puppeteer's browser.on('targetcreated') missed every pthread in the prior
-    // run: pthread workers are children of the dispatcher worker, not the page.
-    // Discover all Chrome targets at browser scope, independently of Puppeteer.
+    // Nested pthreads are not necessarily surfaced by Puppeteer's targetcreated.
     const browserCDP = await browser.createBrowserCDPSession();
     const discovered = new Map();
     const crashed = new Set();
@@ -58,8 +76,6 @@ async function main() {
     const errors = [];
     const workerSessions = [];
     let workersSeen = 0;
-    // Keep the Puppeteer-level exception probe where available, but never
-    // equate zero Puppeteer targets with zero nested Emscripten pthreads.
     browser.on('targetcreated', async target => {
       if (target.type() !== 'worker') return;
       const workerNumber = ++workersSeen;
@@ -110,9 +126,14 @@ async function main() {
     if (errors.length || crashed.size || !result?.ok || !result.checks?.includes('threads=4, SQL=42')) {
       throw new Error(`COI browser failed: ${JSON.stringify({ result, errors, crashed: [...crashed] })}`);
     }
+    if (rangeServer && !result.checks.includes('one DuckDB Parquet query with >=2 overlapping HTTP Range reads')) {
+      throw new Error('Range acceptance enabled but one-query overlap was not verified');
+    }
     console.log('PASS: browser COI initialized DuckDB 2, SELECT 42 and thread settings 1/2/4');
+    if (rangeServer) console.log('PASS: one real DuckDB Parquet SQL query emitted overlapping HTTP 206 Range GETs');
   } finally {
     if (browser) await browser.close();
+    if (rangeServer) rangeServer.kill('SIGTERM');
     server.kill('SIGTERM');
   }
 }
