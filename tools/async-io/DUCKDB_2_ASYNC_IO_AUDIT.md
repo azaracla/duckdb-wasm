@@ -48,6 +48,10 @@ Only assert `max_overlapping_ranges >= 2` if the SQL query ran successfully, the
 - **Workload correction.** That run used `COUNT(*)`, which can be answered largely from Parquet metadata; both observed ranges were at the file tail. This is insufficient to exercise row-group read-ahead. The next gate uses a real column scan (`SUM(id)`) over all 20 row groups and explicitly configures `async_threads=2` plus `read_ahead_depth=4` so the DuckDB 2 ASYNC pool demand is bounded inside the 8-worker Emscripten pool.
 - **Next proof obligation.** Re-run the same single-query Parquet gate with the real column scan and bounded async settings. A green result still requires >=2 overlapping HTTP Range GETs from that one DuckDB query. Ranged-but-serial remains a failure.
 
+## Harness regression note
+
+Run `35525493151` did not exercise the Range gate: the harness referenced `rangeBase` before declaring it, causing `ReferenceError: rangeBase is not defined` immediately after `SELECT 42`. This is a test-harness regression, not a DuckDB/runtime result. Commit `77deba819833479c66133c8b8f5e9fd537f4c1a5` fixes the variable scope and also applies the intended `maximum_threads=2` for Range-mode runs. The acceptance criteria remain unchanged.
+
 ## 2026-09-20 serial Range deep-dive
 
 Run `35525300369` exercised a real column scan with `threads=4`, `async_threads=2`, `read_ahead_depth=4` and returned the correct `SUM(id)=19999900000`. DuckDB issued 42 HTTP Range GETs, all HTTP 206, across the full file rather than only the footer. Despite multiple near-simultaneous browser-side `[range:start]` logs, the threaded fixture server observed `max_inflight=1` and `max_overlapping_ranges=1`; the requests were actually serialized on the wire. Query latency was about 6.53 s with the fixture's intentional 150 ms/request delay.
