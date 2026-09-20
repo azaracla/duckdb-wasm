@@ -22,7 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      ALPHA_SMOKE_DEPS: ${{ runner.temp }}/alpha-smoke-deps
+      # The runner context is not available while evaluating jobs.<job>.env.
+      ALPHA_SMOKE_DEPS: ${{ github.workspace }}/.alpha-smoke-deps
     steps:
       - uses: actions/checkout@v6
         with:
