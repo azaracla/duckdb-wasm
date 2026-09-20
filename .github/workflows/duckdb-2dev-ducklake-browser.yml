@@ -1,0 +1,99 @@
+# Integration gate: reuse separately verified pinned DuckDB 2 loadable runtime and
+# DuckLake wasm_threads side-module artifacts. Never rebuild C++ in browser CI.
+name: DuckDB 2 alpha / DuckLake browser
+
+on:
+  push:
+    branches:
+      - feat/duckdb-2dev-async-http
+    paths:
+      - .github/workflows/duckdb-2dev-ducklake-browser.yml
+      - tools/async-io/coi-smoke/ducklake.html
+      - tools/async-io/coi-smoke/ducklake-run.cjs
+      - tools/async-io/coi-smoke/build.mjs
+      - tools/async-io/coi-smoke/serve.py
+      - packages/duckdb-wasm/src/targets/duckdb-browser-coi.worker.ts
+      - packages/duckdb-wasm/src/targets/duckdb-browser-coi.pthread.worker.ts
+      - packages/duckdb-wasm/src/bindings/runtime_browser.ts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: alpha-ducklake-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ALPHA_SMOKE_DEPS: ${{ github.workspace }}/.alpha-smoke-deps
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Download verified DuckDB 2 loadable COI runtime (run 35528908281)
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '35528908281'
+          name: alpha-coi-loadable-runtime
+          path: packages/duckdb-wasm/src/bindings
+
+      - name: Download pinned DuckLake wasm_threads side module (run 35528049778)
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '35528049778'
+          name: alpha-ducklake-wasm-threads
+          path: ${{ runner.temp }}/ducklake-artifact
+
+      - name: Assert exact extension/core pin and nonempty artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in duckdb-coi.js duckdb-coi.wasm duckdb-coi.pthread.js; do
+            test -s "packages/duckdb-wasm/src/bindings/$file"
+          done
+          test -s "$RUNNER_TEMP/ducklake-artifact/ducklake.duckdb_extension.wasm"
+          grep -Fx 'duckdb_ref=43f897e5f3446bde2b36cef5dc137eea14211fd9' "$RUNNER_TEMP/ducklake-artifact/build-manifest.txt"
+          grep -Fx 'ducklake_ref=eb7b95df82fc3ba0ace777e34ef1c81280477042' "$RUNNER_TEMP/ducklake-artifact/build-manifest.txt"
+          grep -Fx 'emscripten=3.1.57' "$RUNNER_TEMP/ducklake-artifact/build-manifest.txt"
+          node tools/async-io/check_generated_coi.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
+
+      - name: Install isolated browser-only dependencies
+        shell: bash
+        run: |
+          command -v google-chrome || command -v chromium || command -v chromium-browser
+          npm install --prefix "$ALPHA_SMOKE_DEPS" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund \
+            esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0 \
+            wasm-feature-detect@1.6.1 web-worker@1.2.0 js-sha256@0.11.1
+
+      - name: Bundle actual browser COI entrypoints and stage DuckLake
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/async-io/coi-smoke/build.mjs "$RUNNER_TEMP/coi-site"
+          cp tools/async-io/coi-smoke/ducklake.html "$RUNNER_TEMP/coi-site/ducklake.html"
+          cp "$RUNNER_TEMP/ducklake-artifact/ducklake.duckdb_extension.wasm" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
+          test -s "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
+
+      - name: Chromium DuckDB 2 - LOAD pinned DuckLake and SQL acceptance
+        shell: bash
+        run: |
+          set -o pipefail
+          node tools/async-io/coi-smoke/ducklake-run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee ducklake-browser.log
+
+      - name: Upload DuckLake browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-ducklake-browser-log
+          path: ducklake-browser.log
+          if-no-files-found: warn
+          retention-days: 5
