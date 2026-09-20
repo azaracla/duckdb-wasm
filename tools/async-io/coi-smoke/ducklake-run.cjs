@@ -28,16 +28,30 @@ async function main() {
     browser = await puppeteer.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-proxy-server'] });
     const page = await browser.newPage();
     const errors = [];
+    const workerErrors = [];
     page.on('pageerror', error => { errors.push(String(error)); console.error('[pageerror]', error); });
     page.on('error', error => { errors.push(String(error)); console.error('[page crash]', error); });
-    page.on('console', message => console.log(`[chrome ${message.type()}] ${message.text()}`));
+    page.on('workercreated', worker => {
+      worker.on('error', error => { workerErrors.push(String(error)); console.error('[worker error]', error); });
+      worker.on('console', message => console.log(`[worker ${message.type()}] ${message.text()}`));
+    });
+    page.on('console', async message => {
+      const values = await Promise.all(message.args().map(arg => arg.jsonValue().catch(() => arg.toString())));
+      console.log(`[chrome ${message.type()}]`, ...values.map(value => typeof value === 'string' ? value : JSON.stringify(value)));
+    });
     page.on('requestfailed', request => console.error(`[requestfailed] ${request.url()} ${request.failure()?.errorText}`));
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForFunction(() => window.__ducklakeSmoke?.done === true, { timeout: 120000 });
+    try {
+      await page.waitForFunction(() => window.__ducklakeSmoke?.done === true, { timeout: 45000 });
+    } catch (error) {
+      const snapshot = await page.evaluate(() => window.__ducklakeSmoke).catch(failure => ({ evaluationError: String(failure) }));
+      console.error('DUCKLAKE TIMEOUT SNAPSHOT', JSON.stringify({ snapshot, errors, workerErrors }));
+      throw error;
+    }
     const result = await page.evaluate(() => window.__ducklakeSmoke);
-    console.log('DUCKLAKE ACCEPTANCE', JSON.stringify({ result, errors }));
-    if (errors.length || !result?.ok || !result.checks?.includes('DuckLake loader reports loaded=true')) {
-      throw new Error(`DuckLake browser acceptance failed: ${JSON.stringify({ result, errors })}`);
+    console.log('DUCKLAKE ACCEPTANCE', JSON.stringify({ result, errors, workerErrors }));
+    if (errors.length || workerErrors.length || !result?.ok || !result.checks?.includes('DuckLake loader reports loaded=true')) {
+      throw new Error(`DuckLake browser acceptance failed: ${JSON.stringify({ result, errors, workerErrors })}`);
     }
     console.log('PASS: real COI Chromium DuckDB 2 loaded pinned DuckLake side module');
   } finally {
