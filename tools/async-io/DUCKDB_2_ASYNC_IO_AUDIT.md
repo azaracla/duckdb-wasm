@@ -1,32 +1,50 @@
-# DuckDB 2 asynchronous I/O: pinned-code audit and first implementation gate
+# DuckDB 2 asynchronous I/O: pinned-code audit and implementation gates
 
 Date: 2026-09-20. Scope: `feat/duckdb-2dev-async-http` in `azaracla/duckdb-wasm`. This is an engineering audit, **not** a claim that async I/O or DuckLake performance already works in WASM. Product acceptance contract: [DUCKLAKE_PERFORMANCE_GOAL.md](DUCKLAKE_PERFORMANCE_GOAL.md).
 
 ## Exact source and observed implementation
 
 - DuckDB core: `duckdb/duckdb@43f897e5f3446bde2b36cef5dc137eea14211fd9` (`pins.json`). Do not silently use floating `main`/`next` or a 1.x binary. DuckLake `eb7b95df82fc3ba0ace777e34ef1c81280477042` is only a candidate, not yet browser-validated.
-- At that exact DuckDB revision, `src/include/duckdb/parallel/task_scheduler.hpp` declares `NumberOfAsyncThreads()`, `SetAsyncThreads(idx_t)`, and `ScheduleTask(s) (..., TaskSchedulerType pool_type)` with distinct scheduler pools/queues. This confirms native scheduler API presence, **not** whether WASM instantiates working background workers or calls those APIs.
-- DuckDB's July 31, 2026 architecture description (https://duckdb.org/2026/07/31/asynchronous-io) describes separate REGULAR and ASYNC thread pools, Parquet read-ahead that schedules independent fetch tasks, `SET async_threads`, `SET read_ahead_depth`, and async memory governance. It states that the native ASYNC pool runs blocking I/O on worker threads, and DuckLake can benefit through Parquet scans. This is upstream design evidence, not fork runtime evidence. The article's native/S3 speedups cannot be attributed to our WASM build.
-- `lib/CMakeLists.txt` sets `-DDUCKDB_NO_THREADS=1 -sUSE_PTHREADS=0` for non-COI variants. Therefore merely switching to EH without changing this configuration cannot be asserted to execute DuckDB's **native** multithreaded ASYNC pool. EH is still an option for a separately implemented browser-side asynchronous bridge, but that must be explicitly described as a different mechanism.
-- `lib/src/http_wasm.cc` implements `HTTPWasmClient::Get` and `Head` using `EM_ASM_PTR`, `XMLHttpRequest`, and **`xhr.open(method, url, false)`** followed by `xhr.send(null)`. `false` is synchronous XHR. There is a C++ synchronous `HTTPClient` contract around these calls. Inspect other HTTP methods, range reads, and file-handle ownership before changing this file. Changing only `false` to `true`, or substituting an unawaited `fetch`, would break response lifetime and return before bytes are available; it is **not** a fix.
+- At that exact DuckDB revision, `src/include/duckdb/common/enums/task_scheduler_type.hpp` declares two distinct pool types, `REGULAR` and `ASYNC`.
+- `src/include/duckdb/parallel/task_scheduler.hpp` declares `NumberOfAsyncThreads()`, `SetAsyncThreads(idx_t)` and `ScheduleTask(s)(..., TaskSchedulerType pool_type)` with distinct scheduler pools/queues. `src/parallel/task_scheduler.cpp` constructs both queues/pools and dispatches ASYNC tasks to them; REGULAR workers may also process queues across pools.
+- **Confirmed source-level obstruction for EH:** `src/parallel/task_scheduler.cpp::SetAsyncThreads` explicitly raises `NotImplementedException("DuckDB was compiled without threads! Setting async threads != 0 is not allowed.")` when `DUCKDB_NO_THREADS` is defined. `ExecuteForever` also rejects its background thread loop under that define. Our `lib/CMakeLists.txt` sets `-DDUCKDB_NO_THREADS=1 -sUSE_PTHREADS=0` for non-COI variants. Consequently, the *actual upstream ASYNC thread pool* cannot be enabled in our unmodified EH build; it requires a supported pthread build or a different explicitly implemented browser scheduler/bridge. Do **not** claim EH automatically inherits DuckDB 2's async pool.
+- DuckDB's July 31, 2026 architecture description (https://duckdb.org/2026/07/31/asynchronous-io) describes separate REGULAR and ASYNC thread pools, Parquet read-ahead that schedules independent fetch tasks, `SET async_threads`, `SET read_ahead_depth`, and async memory governance. It states that the native ASYNC pool runs blocking I/O on worker threads, and DuckLake can benefit through Parquet scans. This is upstream design evidence, not fork runtime evidence; native/S3 speedups cannot be attributed to our WASM build.
+- `lib/src/http_wasm.cc` implements `HTTPWasmClient::Get` and `Head` using `EM_ASM_PTR`, `XMLHttpRequest`, and **`xhr.open(method, url, false)`** followed by `xhr.send(null)`. `false` is synchronous XHR. There is a C++ synchronous `HTTPClient` contract around these calls. Inspect the remaining HTTP methods, Range call sites, and file-handle ownership before changing this file. Changing only `false` to `true`, or substituting an unawaited `fetch`, would break response lifetime and return before bytes are available; it is **not** a fix.
 - The 32-preloaded-pthread COI artifact compiled on run https://github.com/azaracla/duckdb-wasm/actions/runs/35500879338; browser initialization still stalled at `loading-workers` in https://github.com/azaracla/duckdb-wasm/actions/runs/35502437614. Neither `SELECT 42` nor Range overlap nor DuckLake speedup is proven. Do not equate an HTTP 200 for a worker file with a ready pthread.
 
 ## Design decision and open proof obligations
 
 **First candidate for actual upstream ASYNC-pool behavior:** restore a minimal, bounded COI pthread configuration and fix the worker initialization protocol; verify `SELECT 42` and `SET async_threads` in the browser, then trace reads made by an actual Parquet query. This retains upstream's blocking-I/O-on-ASYNC-threads architecture, but requires proving that synchronous XHR is supported in its actual worker execution environment (not on a window's main thread), cross-origin isolation, memory use, and the pool's behavior under the Emscripten thread scheduler. A 32-worker preload is an experimental diagnostic, not the desired operational configuration.
 
-**Alternative candidate:** an EH/non-threaded build with JS `fetch` + async suspension (if viable with this exact Emscripten version) or worker message passing. Such a bridge can provide overlapping Range requests but does **not** automatically implement DuckDB's native ASYNC pool because `DUCKDB_NO_THREADS=1` is set. Identify how scan tasks issue requests concurrently before claiming equivalence.
+**Alternative candidate:** an EH/non-threaded build with JS `fetch` + async suspension (if viable with this exact Emscripten version) or worker message passing. Such a bridge can provide overlapping Range requests but does **not** automatically implement DuckDB's native ASYNC pool because `DUCKDB_NO_THREADS=1` is set. Identify how scan tasks issue requests concurrently before claiming equivalence. Do **not** change `DUCKDB_NO_THREADS` on EH while leaving pthreads off and expect a working scheduler.
 
-**Do not choose between these candidates by intuition alone.** The next code inspection must trace pinned DuckDB's Parquet read-ahead task creation -> `TaskSchedulerType::ASYNC` -> filesystem/HTTP `Read` -> WASM client, including existing compile-time `DUCKDB_NO_THREADS` branches. Record a specific source path and a reproducible browser probe for each link. Then implement the smallest safe bridge or scheduler fix.
+**Not yet traced:** the exact pinned Parquet read-ahead task creation -> `TaskSchedulerType::ASYNC` -> filesystem/HTTP `Read` -> WASM client and all relevant `DUCKDB_NO_THREADS` branches. This must be established with precise paths/callsites before modifying core scheduling or declaring an integrated pool.
 
-## Mandatory measurement gate
+## Range tracing tool added (instrument only, not a green DuckDB test)
 
-1. Same pinned core, browser and reproducible Parquet fixture with multiple row groups/column chunks, served from an instrumented HTTP Range server with CORS and proper `206 Content-Range` semantics.
-2. Confirm real browser SQL and query result; record `SET threads`, `SET async_threads`, `SET read_ahead_depth` where available (unsupported settings must be reported, not treated as successes).
+`tools/async-io/range_trace_server.py` serves a local, real Parquet file with `GET`/`HEAD`, byte/suffix HTTP Range responses, correct `206`/`416` and `Content-Range`, CORS and exposed headers. Its `/__trace` endpoint records monotonic start/end timestamps, path, method, Range header, status, bytes, max in-flight requests and max overlap **of completed ranged GETs**. `/__reset` resets tracing only while no file requests are in progress. `--delay-ms` enables reproducible overlap under local networking. It binds to `127.0.0.1`; do not expose production AIS data or authentication secrets.
+
+Example with a generated, non-sensitive Parquet fixture containing multiple row groups/column chunks:
+
+```sh
+python3 tools/async-io/range_trace_server.py --file /path/to/test.parquet --port 8767 --delay-ms 100
+# Reset before the query and read trace AFTER it finishes:
+curl -s http://127.0.0.1:8767/__reset
+# In the browser, execute exactly ONE real DuckDB query against:
+# http://127.0.0.1:8767/fixture.parquet
+curl -s http://127.0.0.1:8767/__trace
+```
+
+Only assert `max_overlapping_ranges >= 2` if the SQL query ran successfully, the trace was reset directly before this one query, no extraneous clients made ranged GETs, and requests genuinely originated from DuckDB. A separate unit test intentionally sends synthetic concurrent requests to validate that the *server* detects overlaps; its green result is **not** proof of DuckDB concurrency. `python3 -m unittest discover -s tools/async-io -p 'test_*.py' -v` runs this test with the rest of the lightweight CI checks and without recompiling DuckDB.
+
+## Mandatory end-to-end measurement gate
+
+1. Same pinned core, browser and reproducible Parquet fixture with multiple row groups/column chunks, served from the instrumented HTTP Range server above.
+2. Confirm real browser SQL and correct query result; record `SET threads`, `SET async_threads`, `SET read_ahead_depth` where available (unsupported settings must be reported, not treated as successes).
 3. Server logs must include request ID, URL, Range, monotonic start/finish, status, bytes, and max in-flight requests; assert >=2 **overlapping Range reads issued by one query**. Prefetch started in JS independently of DuckDB must not pass the test.
 4. Query DuckLake metadata and actual Parquet files end to end; measure cold/warm repeated latency versus a controlled no-read-ahead baseline at equal DuckDB revision/data/network/browser, including memory, bytes and failures. Report null or negative gains honestly.
 5. Compile C++ only when C++/WASM-affecting code changes. Browser worker, instrumentation and benchmark changes must reuse a pinned successful artifact; do not use a stale artifact to claim that newly edited C++ is validated.
 
 ## Next actionable development slice
 
-Trace `duckdb/duckdb@43f897e5f3` Parquet ASYNC scheduling and read-ahead sources and our `lib/src/http_wasm.cc` GET/HEAD/Range callsites; introduce a small browser-compatible Range timing fixture, first as a non-gating diagnostic, then gate on SQL-generated overlaps once SQL actually runs. Keep COI initialization debugging separate from DuckLake performance metrics. No source edits to `main` or the AIS repository.
+Trace the pinned Parquet read-ahead implementation through the scheduler and filesystem (currently an open proof obligation); run real SQL with a browser-compatible DuckDB 2 runtime, connect it to this trace server and only then use overlaps as a gate. Diagnose COI worker initialization independently rather than masking it with a 32-pthread preload. No edits to `main` or the AIS repository.
