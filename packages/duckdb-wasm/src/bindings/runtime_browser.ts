@@ -23,8 +23,11 @@ const PATH_SEP_REGEX = /\/|\\/;
 const HTTP_RANGE_BROKER_TIMEOUT_MS = 30_000;
 let HTTP_RANGE_BROKER: Worker | null = null;
 let HTTP_RANGE_BROKER_URL: string | null = null;
+let HTTP_RANGE_BROKER_READY = false;
+let HTTP_RANGE_BROKER_READY_PROMISE: Promise<void> | null = null;
 
 const HTTP_RANGE_BROKER_SOURCE = `
+self.postMessage({ type: 'ready' });
 self.onmessage = async ({ data }) => {
     const control = new Int32Array(data.control);
     const finish = (state, status, responseBytes, errorCode) => {
@@ -73,7 +76,8 @@ function canUseHTTPRangeBroker(mod: DuckDBModule): boolean {
         mod.HEAPU8.buffer instanceof SharedArrayBuffer &&
         typeof Worker !== 'undefined' &&
         typeof window === 'undefined' &&
-        typeof Atomics.wait === 'function'
+        typeof Atomics.wait === 'function' &&
+        HTTP_RANGE_BROKER_READY
     );
 }
 
@@ -82,6 +86,35 @@ function getHTTPRangeBroker(): Worker {
     HTTP_RANGE_BROKER_URL = URL.createObjectURL(new Blob([HTTP_RANGE_BROKER_SOURCE], { type: 'text/javascript' }));
     HTTP_RANGE_BROKER = new Worker(HTTP_RANGE_BROKER_URL);
     return HTTP_RANGE_BROKER;
+}
+
+export function prepareHTTPRangeBroker(): Promise<void> {
+    if (HTTP_RANGE_BROKER_READY) return Promise.resolve();
+    if (HTTP_RANGE_BROKER_READY_PROMISE) return HTTP_RANGE_BROKER_READY_PROMISE;
+    if (
+        typeof SharedArrayBuffer === 'undefined' ||
+        typeof Worker === 'undefined' ||
+        typeof window !== 'undefined'
+    ) {
+        return Promise.resolve();
+    }
+    const worker = getHTTPRangeBroker();
+    HTTP_RANGE_BROKER_READY_PROMISE = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('HTTP Range broker startup timed out')), 10_000);
+        const onMessage = (event: MessageEvent<any>) => {
+            if (event.data?.type !== 'ready') return;
+            clearTimeout(timeout);
+            worker.removeEventListener('message', onMessage);
+            HTTP_RANGE_BROKER_READY = true;
+            resolve();
+        };
+        worker.addEventListener('message', onMessage);
+        worker.addEventListener('error', (event: ErrorEvent) => {
+            clearTimeout(timeout);
+            reject(new Error(`HTTP Range broker startup failed: ${event.message}`));
+        }, { once: true });
+    });
+    return HTTP_RANGE_BROKER_READY_PROMISE;
 }
 
 function readHTTPRangeViaBroker(
