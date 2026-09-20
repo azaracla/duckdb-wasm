@@ -29,6 +29,8 @@ let HTTP_RANGE_BROKER_READY_PROMISE: Promise<void> | null = null;
 const HTTP_RANGE_BROKER_SOURCE = `
 self.postMessage({ type: 'ready' });
 self.onmessage = async ({ data }) => {
+    const started = performance.now();
+    console.log('[range-broker:start] parent=' + data.parentWorkerId + ' location=' + data.location + ' bytes=' + data.bytes + ' t0=' + started.toFixed(3));
     const control = new Int32Array(data.control);
     const finish = (state, status, responseBytes, errorCode) => {
         Atomics.store(control, 1, status);
@@ -62,6 +64,8 @@ self.onmessage = async ({ data }) => {
             return;
         }
         new Uint8Array(data.heap, data.buf, data.bytes).set(body);
+        const ended = performance.now();
+        console.log('[range-broker:end] parent=' + data.parentWorkerId + ' location=' + data.location + ' bytes=' + data.bytes + ' status=' + response.status + ' t0=' + started.toFixed(3) + ' t1=' + ended.toFixed(3) + ' duration=' + (ended - started).toFixed(3));
         finish(1, response.status, body.byteLength, 0);
     } catch (error) {
         console.error('[range-broker] fetch failed', error);
@@ -126,6 +130,14 @@ function readHTTPRangeViaBroker(
 ): number {
     const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 4);
     const control = new Int32Array(controlBuffer);
+    const g = globalThis as any;
+    const parentWorkerId =
+        g.__duckdbRangeWorkerId ??=
+            Math.random().toString(36).slice(2, 8);
+    const started = performance.now();
+    console.log(
+        `[range-broker:dispatch] parent=${parentWorkerId} location=${location} bytes=${bytes} t0=${started.toFixed(3)}`,
+    );
     getHTTPRangeBroker().postMessage({
         url,
         buf,
@@ -133,6 +145,7 @@ function readHTTPRangeViaBroker(
         location,
         heap: mod.HEAPU8.buffer,
         control: controlBuffer,
+        parentWorkerId,
     });
 
     const waitResult = Atomics.wait(control, 0, 0, HTTP_RANGE_BROKER_TIMEOUT_MS);
@@ -153,6 +166,10 @@ function readHTTPRangeViaBroker(
         };
         throw new Error(`HTTP Range broker failed: ${reasons[errorCode] || `error code ${errorCode}`}`);
     }
+    const ended = performance.now();
+    console.log(
+        `[range-broker:return] parent=${parentWorkerId} location=${location} bytes=${bytes} t0=${started.toFixed(3)} t1=${ended.toFixed(3)} duration=${(ended - started).toFixed(3)}`,
+    );
     return responseBytes;
 }
 
