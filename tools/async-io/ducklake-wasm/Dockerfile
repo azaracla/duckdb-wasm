@@ -28,8 +28,12 @@ RUN git clone --filter=blob:none https://github.com/duckdb/ducklake.git ducklake
 RUN cd /src/ducklake \
     && python3 duckdb/scripts/apply_extension_patches.py duckdb/.github/patches/extensions/ducklake/
 
+# Experimental diagnostics: distinguish catalog construction / FinalizeLoad
+# from the already-instrumented initializer before diagnosing the hang.
 COPY instrument_initializer.py /tmp/instrument_initializer.py
-RUN python3 /tmp/instrument_initializer.py
+COPY instrument_catalog.py /tmp/instrument_catalog.py
+RUN python3 /tmp/instrument_initializer.py \
+    && python3 /tmp/instrument_catalog.py
 
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
     && git -C /opt/vcpkg checkout --detach "$VCPKG_REF" \
