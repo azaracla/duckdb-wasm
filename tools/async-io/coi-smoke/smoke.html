@@ -8,6 +8,30 @@ import * as duckdb from './duckdb-browser.mjs';
 
 const status = window.__alphaSmoke = { done: false, ok: false, checks: [] };
 
+async function runAsyncFetchBaseline(origin) {
+  const count = 4;
+  const bytes = 16384;
+  const results = await Promise.all(Array.from({ length: count }, async (_, workerId) => {
+    const offset = workerId * 65536;
+    const response = await fetch(`${origin}/fixture.parquet`, {
+      headers: { Range: `bytes=${offset}-${offset + bytes - 1}` },
+      cache: 'no-store',
+    });
+    const body = await response.arrayBuffer();
+    return {
+      workerId,
+      offset,
+      bytes,
+      status: response.status,
+      responseBytes: body.byteLength,
+      contentRange: response.headers.get('Content-Range'),
+    };
+  }));
+  const response = await fetch(`${origin}/__trace`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`async fetch baseline trace failed: HTTP ${response.status}`);
+  return { results, trace: await response.json() };
+}
+
 async function runSyncXHRBaseline(origin) {
   const count = 4;
   const bytes = 16384;
@@ -144,10 +168,16 @@ try {
       }
       const origin = base.origin;
 
-      // Independent control: four plain Web Workers issue synchronous XHR Range
-      // requests against the same threaded server. This is synthetic and can
-      // NEVER satisfy the DuckDB acceptance gate; it only tells us whether
-      // Chromium itself can overlap sync-XHRs in this exact COI environment.
+      // Independent controls. Neither can satisfy the DuckDB gate: they only
+      // distinguish browser async fetch transport from synchronous XHR transport.
+      const asyncBaselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
+      if (!asyncBaselineReset.ok) throw new Error(`Async baseline trace reset failed: HTTP ${asyncBaselineReset.status}`);
+      try {
+        status.asyncFetchBaseline = await runAsyncFetchBaseline(origin);
+      } catch (error) {
+        status.asyncFetchBaselineError = error instanceof Error ? error.message : String(error);
+      }
+
       const baselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
       if (!baselineReset.ok) throw new Error(`Baseline trace reset failed: HTTP ${baselineReset.status}`);
       try {
