@@ -54,10 +54,11 @@ set -x
 DUCKDB_WASM_VERSION_NAME=${DUCKDB_WASM_VERSION:-unknown}
 
 # DuckDB 2 alpha's browser initialization exhausted the four-worker Emscripten
-# pool before SQL ran. Preallocate enough workers without limiting DuckDB's
-# database threads. The strict setting turns any remaining exhaustion into a
-# deterministic failure rather than a silent deadlock. This applies ONLY to
-# the experimental COI build, and refuses unexpected CMake input.
+# pool before SQL ran. A 32-worker pool proved too expensive to initialize in
+# Chrome (all workers stayed live while loading). Keep a bounded eight-worker
+# pool: enough headroom for the smoke's threads=4 plus async/background work,
+# while still failing deterministically on genuine exhaustion. This applies
+# ONLY to the experimental COI build and refuses unexpected CMake input.
 if [ "${FEATURES}" = "coi" ]; then
   python3 - "${CPP_SOURCE_DIR}/CMakeLists.txt" <<'PY'
 from pathlib import Path
@@ -65,11 +66,11 @@ import sys
 path = Path(sys.argv[1])
 source = path.read_text()
 old = '-sPTHREAD_POOL_SIZE=4 -pthread'
-new = '-sPTHREAD_POOL_SIZE=32 -sPTHREAD_POOL_SIZE_STRICT=2 -pthread'
+new = '-sPTHREAD_POOL_SIZE=8 -sPTHREAD_POOL_SIZE_STRICT=2 -pthread'
 if source.count(old) != 1:
     raise SystemExit(f'Expected exactly one original COI pthread pool flag, found {source.count(old)}')
 path.write_text(source.replace(old, new))
-print('COI pthread pool: 32 preallocated workers, strict exhaustion enabled')
+print('COI pthread pool: 8 preallocated workers, strict exhaustion enabled')
 PY
 fi
 
@@ -126,8 +127,8 @@ awk '{gsub(/get\(stubs, prop\) \{/,"get(stubs,prop) { if (prop.startsWith(\"invo
 cp ${BUILD_DIR}/beauty2.js ${BUILD_DIR}/duckdb_wasm.js
 
 if [ "${FEATURES}" = "coi" ]; then
-  grep -Eq 'var pthreadPoolSize = 32;' "${BUILD_DIR}/duckdb_wasm.js" || {
-    echo 'ERROR: generated COI JS does not contain the 32-worker preallocated pthread pool' >&2
+  grep -Eq 'var pthreadPoolSize = 8;' "${BUILD_DIR}/duckdb_wasm.js" || {
+    echo 'ERROR: generated COI JS does not contain the 8-worker preallocated pthread pool' >&2
     exit 1
   }
 fi
