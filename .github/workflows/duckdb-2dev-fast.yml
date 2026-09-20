@@ -62,4 +62,5 @@ jobs:
         run: |
           node --check tools/async-io/coi-smoke/build.mjs
           node --check tools/async-io/coi-smoke/run.cjs
+          node --check tools/async-io/coi-smoke/benchmark.cjs
           python3 -m py_compile tools/async-io/coi-smoke/serve.py
