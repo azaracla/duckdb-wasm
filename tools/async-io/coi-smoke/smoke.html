@@ -9,12 +9,13 @@ import * as duckdb from './duckdb-browser.mjs';
 const status = window.__alphaSmoke = { done: false, ok: false, checks: [] };
 
 async function runAsyncFetchBaseline(origin) {
+  const count = 4;
   const bytes = 16384;
-  const reads = Array.from({ length: 4 }, async (_, workerId) => {
+  const results = await Promise.all(Array.from({ length: count }, async (_, workerId) => {
     const offset = workerId * 65536;
     const response = await fetch(`${origin}/fixture.parquet`, {
-      cache: 'no-store',
       headers: { Range: `bytes=${offset}-${offset + bytes - 1}` },
+      cache: 'no-store',
     });
     const body = await response.arrayBuffer();
     return {
@@ -25,8 +26,7 @@ async function runAsyncFetchBaseline(origin) {
       responseBytes: body.byteLength,
       contentRange: response.headers.get('Content-Range'),
     };
-  });
-  const results = await Promise.all(reads);
+  }));
   const response = await fetch(`${origin}/__trace`, { cache: 'no-store' });
   if (!response.ok) throw new Error(`async fetch baseline trace failed: HTTP ${response.status}`);
   return { results, trace: await response.json() };
@@ -172,14 +172,6 @@ try {
       // distinguish browser async fetch transport from synchronous XHR transport.
       const asyncBaselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
       if (!asyncBaselineReset.ok) throw new Error(`Async baseline trace reset failed: HTTP ${asyncBaselineReset.status}`);
-      try {
-        status.asyncFetchBaseline = await runAsyncFetchBaseline(origin);
-      } catch (error) {
-        status.asyncFetchBaselineError = error instanceof Error ? error.message : String(error);
-      }
-
-      const fetchBaselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
-      if (!fetchBaselineReset.ok) throw new Error(`Fetch baseline trace reset failed: HTTP ${fetchBaselineReset.status}`);
       try {
         status.asyncFetchBaseline = await runAsyncFetchBaseline(origin);
       } catch (error) {
