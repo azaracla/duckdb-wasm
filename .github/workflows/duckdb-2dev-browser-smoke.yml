@@ -22,7 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # The runner context is not available while evaluating jobs.<job>.env.
       ALPHA_SMOKE_DEPS: ${{ github.workspace }}/.alpha-smoke-deps
     steps:
       - uses: actions/checkout@v6
@@ -31,7 +30,7 @@ jobs:
           submodules: false
           fetch-depth: 0
 
-      - name: Select newest successful corrected COI build (fail closed on stale artifact)
+      - name: Select verified COI artifact from successful compilation job
         id: source
         shell: bash
         env:
@@ -45,28 +44,36 @@ jobs:
           from urllib.request import Request, urlopen
 
           repo = os.environ['GITHUB_REPOSITORY']
-          params = urlencode({'branch': 'feat/duckdb-2dev-async-http', 'status': 'success', 'per_page': 30})
-          url = f'https://api.github.com/repos/{repo}/actions/workflows/duckdb-2dev-coi.yml/runs?{params}'
-          request = Request(url, headers={
+          headers = {
               'Accept': 'application/vnd.github+json',
               'Authorization': f'Bearer {os.environ["GITHUB_TOKEN"]}',
               'X-GitHub-Api-Version': '2022-11-28',
-          })
-          with urlopen(request, timeout=20) as response:
-              runs = json.load(response)['workflow_runs']
-          # This SHA introduced the actual fix for the destructive JS export filter.
+          }
+          def fetch(url):
+              with urlopen(Request(url, headers=headers), timeout=30) as response:
+                  return json.load(response)
+
+          params = urlencode({'branch': 'feat/duckdb-2dev-async-http', 'status': 'completed', 'per_page': 50})
+          runs = fetch(f'https://api.github.com/repos/{repo}/actions/workflows/duckdb-2dev-coi.yml/runs?{params}')['workflow_runs']
           fixed_at = '91f40a9d7c9c2903008a0f793641cd638767c32e'
           for run in sorted(runs, key=lambda item: item['id'], reverse=True):
               sha = run['head_sha']
-              fixes_glue = subprocess.run(['git', 'merge-base', '--is-ancestor', fixed_at, sha], check=False).returncode == 0
-              in_branch = subprocess.run(['git', 'merge-base', '--is-ancestor', sha, 'HEAD'], check=False).returncode == 0
-              if fixes_glue and in_branch:
-                  with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-                      output.write(f'run_id={run["id"]}\n')
-                  print(f'Selected corrected COI artifact from run {run["id"]}, commit {sha}')
-                  break
+              if subprocess.run(['git', 'merge-base', '--is-ancestor', fixed_at, sha], check=False).returncode != 0:
+                  continue
+              if subprocess.run(['git', 'merge-base', '--is-ancestor', sha, 'HEAD'], check=False).returncode != 0:
+                  continue
+              jobs = fetch(f'https://api.github.com/repos/{repo}/actions/runs/{run["id"]}/jobs?per_page=100')['jobs']
+              if not any(job['name'] == 'coi' and job['conclusion'] == 'success' for job in jobs):
+                  continue
+              artifacts = fetch(f'https://api.github.com/repos/{repo}/actions/runs/{run["id"]}/artifacts?per_page=100')['artifacts']
+              if not any(artifact['name'] == 'alpha-coi-runtime' and not artifact['expired'] for artifact in artifacts):
+                  continue
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                  output.write(f'run_id={run["id"]}\n')
+              print(f'Selected verified COI artifact: run {run["id"]}, commit {sha}; compilation job green')
+              break
           else:
-              raise SystemExit('No successful COI build containing the JS glue fix; refusing old broken artifacts')
+              raise SystemExit('No completed, corrected, ancestor COI run with successful compilation and live runtime artifact')
           PY
 
       - uses: actions/download-artifact@v4
@@ -88,8 +95,10 @@ jobs:
       - name: Install ONLY isolated browser smoke dependencies
         shell: bash
         run: |
+          command -v google-chrome || command -v chromium || command -v chromium-browser
           npm install --prefix "$ALPHA_SMOKE_DEPS" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund \
-            esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0
+            esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0 \
+            wasm-feature-detect@1.6.1 web-worker@1.2.0
 
       - name: Bundle ONLY browser API, COI dispatcher and pthread wrapper
         shell: bash
@@ -97,4 +106,15 @@ jobs:
 
       - name: Headless Chrome — COOP/COEP, DuckDB 2, SELECT 42, 1/2/4 threads
         shell: bash
-        run: node tools/async-io/coi-smoke/run.cjs "$RUNNER_TEMP/coi-site"
+        run: |
+          set -o pipefail
+          node tools/async-io/coi-smoke/run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee browser-smoke.log
+
+      - name: Upload browser smoke diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-standalone-browser-smoke-log
+          path: browser-smoke.log
+          if-no-files-found: ignore
+          retention-days: 2
