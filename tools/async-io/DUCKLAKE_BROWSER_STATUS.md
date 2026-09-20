@@ -1,34 +1,39 @@
 # DuckLake browser / DuckDB 2 alpha integration status
 
-Recorded 2026-09-20. Work branch `feat/duckdb-2dev-async-http`. Not production-ready.
+Updated 2026-09-20. Branch `feat/duckdb-2dev-async-http`. Experimental, not production-ready.
 
-## Exact reproducible artifacts
+## Exact build artifacts
 
-- DuckDB core: `43f897e5f3446bde2b36cef5dc137eea14211fd9`, reports `v2.0.0-dev1`.
-- DuckLake side module: `eb7b95df82fc3ba0ace777e34ef1c81280477042`.
-- Emscripten `3.1.57` and shared-memory `wasm_threads`.
-- The loadable COI runtime compiled successfully in workflow run `35528908281`, artifact `alpha-coi-loadable-runtime`.
-- The pinned DuckLake side module compiled successfully in workflow run `35528049778`, artifact `alpha-ducklake-wasm-threads`.
-- The browser workflow is `.github/workflows/duckdb-2dev-ducklake-browser.yml`. It downloads those artifacts, checks the pin manifest, bundles real browser workers and tests under COOP/COEP in Chromium. It does *not* recompile C++.
+- DuckDB core `43f897e5f3446bde2b36cef5dc137eea14211fd9`, `v2.0.0-dev1`; Emscripten `3.1.57`, `wasm_threads`, COI.
+- DuckLake side module `eb7b95df82fc3ba0ace777e34ef1c81280477042`.
+- Successful loadable COI build run `35528908281`, artifact `alpha-coi-loadable-runtime`; successful pinned DuckLake build run `35528049778`, artifact `alpha-ducklake-wasm-threads`.
+- Chromium acceptance workflow `.github/workflows/duckdb-2dev-ducklake-browser.yml` reuses these artifacts without recompiling C++, asserts manifest pins, and serves them in an isolated COOP/COEP browser.
 
-## Observed and fixed hurdles
+## Browser extension loader: demonstrated, NOT consistently reliable
 
-1. DuckDB's pinned extension path parser requires `.duckdb_extension`, not the build artifact's `.duckdb_extension.wasm`: stage an extension alias with the expected suffix.
-2. The pinned `WASM_LOADABLE_EXTENSIONS` loader also performs a synchronous XHR on that suffix-validated URL before `dlopen`: serve the same bytes at both URLs. A browser FS registration alone is insufficient.
-3. Browser `DuckDBConfig` expects `maximumThreads` (camelCase); `maximum_threads` silently has no effect. Set `maximumThreads: 2`, SQL `threads=2`, `async_threads=1`, and assert SQL settings. The eight preallocated Emscripten pthreads still report some exhaustion warnings during initialization, so consider resource/thread lifecycle separately rather than simply increasing the pool.
-4. The locally compiled extension is unsigned. Only the isolated CI test opts into `allowUnsignedExtensions: true` after checking exact build references; this is deliberately **not** a production configuration or a recommendation to load untrusted modules.
+Workflow **`35531657241`** successfully downloaded the extension, entered Emscripten `dlopen`, read dylink metadata, compiled and instantiated the WASM side module, registered TLS, applied relocations, ran constructors and completed module export wiring (including its second thread-side load). `LOAD 'ducklake.duckdb_extension'` **returned**, `duckdb_extensions()` reported `ducklake` with `loaded=true`, and `SELECT 42` worked afterward. This proves an actual pinned DuckLake load in Chromium, not just successful compilation.
 
-## Current blocker and debugging
+However, workflow **`35531839462`** reused the identical binary artifacts and loader probes and **hung during `LOAD`**, directly after printing `Loading extension ducklake` and *before* the first linker probe. This demonstrates **nondeterministic loader/runtime behavior**, possibly related to initialization/thread scheduling; causality is not established. Both runs printed warnings that the preallocated eight-pthread pool was exhausted. Do not treat one successful load as stable integration or simply inflate the pool without investigation. The CI test must stay strict and may fail until stability is resolved.
 
-Workflow run `35531321281` passed the extension's HTTP download and printed `Loading extension ducklake`, then timed out after 120 s with no SQL result. This places the observed hang after the pinned loader's XHR and before `LOAD` returned, plausibly in `dlopen` or module constructor/initialization; it is not yet proven which. Its logs still contain Emscripten pool-exhaustion warnings, which require investigation, not an assumed fix.
+## Known browser filesystem blocker
 
-The browser test now records its current stage, validates the side module with `WebAssembly.validate`, and has a gated end-to-end `ATTACH`/`CREATE TABLE`/`INSERT`/`SELECT` acceptance query. The runner captures a snapshot on timeout. The CI-only `instrument-ducklake.mjs` injects source-checked logs at dynamic-linker phases (metadata, compilation, instantiation, TLS, relocations and constructors) in a downloaded disposable JS artifact. This instrumentation does not modify production JS, pinned DuckDB source, or the Parquet benchmark artifact.
+On the successful-load run `35531657241`, the subsequent `ATTACH 'ducklake:metadata.ducklake' AS lake (DATA_PATH 'lake-data/')` emitted `Buffering missing file: metadata.ducklake` from `runtime_browser.ts` and hung until the 45-second watchdog. The browser filesystem's fallback for an unregistered missing local file creates a dummy 1-byte buffered handle, which is insufficient evidence of correct creation of a new secondary DuckDB catalog. No local DuckLake catalog success or remote data query is claimed.
 
-**No successful `LOAD`, `ATTACH`, DuckLake browser query, DuckLake browser performance speedup, or native-vs-WASM benchmark is claimed until its corresponding CI/query/benchmark actually passes.** Do not conflate the already validated 2.287x Parquet Range broker speedup at injected 150 ms latency with DuckLake performance.
+Test commit `ce6ae91cc40509294b06da4dec9391c029210cf5` switches the next isolation attempt to `ducklake:duckdb::memory:` with `DATA_INLINING_ROW_LIMIT 100`, followed by `CREATE TABLE`, `INSERT`, and `SELECT`. Its own CI run `35531839462` never reached ATTACH due the intermittent `LOAD` hang, so **the in-memory catalog attempt remains untested**. Even if it passes, two inlined rows would prove metadata/SQL integration, *not* Parquet or remote I/O.
 
-## After LOAD is green
+## Fixes and diagnostics committed
 
-1. Require the new actual DuckLake `ATTACH`/table create/insert/SELECT test to pass and inspect metadata-file/Parquet-file behavior in browser FS.
-2. Exercise a representative read-only remote DuckLake fixture, measuring both catalog and Parquet I/O. Reuse the verified HTTP Range trace server and validate query result/206/overlap.
-3. Run controlled five-sample sync-XHR vs broker tests with identical dataset, core revision, DuckLake revision, SQL, cache policy and network latency at both 150 ms and 0 ms. Report median, p95, Range signature, overlap and bytes. Also record cold/warm cases separately.
-4. For native DuckDB comparison, build native from the *same exact* core revision with the compatible pinned extension, against the same fixture/query/HTTP server. Do not compare unrelated published numbers as direct benchmark results.
+1. Loader requires `.duckdb_extension` suffix and performs a synchronous XHR on this filename before `dlopen`; CI serves the exact same pinned bytes at the suffix-validated URL and original `.wasm` path.
+2. Browser config uses `maximumThreads`, not `maximum_threads`. The test sets `maximumThreads=2`, SQL `threads=2` / `async_threads=1`, verifies settings, but startup pool-exhaustion warnings persist.
+3. Only for isolated CI of the exact pinned locally compiled unsigned module, config sets `allowUnsignedExtensions: true`; **never propagate this to production or arbitrary extensions**.
+4. The runner records precise browser stages and timeout snapshots. Source-guarded `instrument-ducklake.mjs` probes Emscripten's dynamic linker **only in the disposable downloaded generated JS**; it does not modify production or the Parquet benchmark.
+
+## Remaining acceptance gates
+
+1. Stabilize repeated cold `LOAD` cycles (not a single green run); isolate persistent pthread pool warnings / loader scheduling and extension init. Do not claim stable load prematurely.
+2. Successfully `ATTACH` a DuckLake catalog and execute a verified SQL query; check metadata path and browser FS creation explicitly. In-memory metadata is an isolation control only.
+3. Query a representative read-only remote DuckLake fixture with actual catalog and Parquet HTTP I/O, verify answers, 206 responses and observed overlap from a single DuckLake SQL query. Test cold and warm separately.
+4. Run matched five-sample sync-XHR/broker A/B on *DuckLake* at 150 ms and 0 ms injected latency. Publish median/p95, Range signature, overlap, bytes, errors and regressions.
+5. Native comparison requires native DuckDB built from exact pinned core + compatible DuckLake and identical fixture/query/server; not yet executed.
+
+The separately validated **2.287x Parquet broker speedup under simulated 150 ms latency is not a DuckLake performance claim**.
