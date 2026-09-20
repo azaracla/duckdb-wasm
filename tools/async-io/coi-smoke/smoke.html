@@ -56,6 +56,9 @@ try {
         throw new Error('Range fixture must be the local 127.0.0.1 HTTP origin');
       }
       const origin = base.origin;
+      // Use the browser HTTP transport compiled into duckdb-wasm. This avoids
+      // external httpfs autoload while still exercising DuckDB's real HTTP path.
+      await connection.query("SET builtin_httpfs=true");
       const reset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
       if (!reset.ok) throw new Error(`Trace reset failed: HTTP ${reset.status}`);
       // This HTTP URL is derived only from the validated local origin above.
