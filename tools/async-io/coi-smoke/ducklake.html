@@ -16,9 +16,12 @@ try {
   status.version = await db.getVersion();
   if (!/2\.0\.0/.test(status.version)) throw new Error(`Wrong DuckDB version: ${status.version}`);
   status.checks.push('pinned DuckDB 2 runtime');
-  // DuckDBConfig uses maximumThreads (camelCase); maximum_threads was silently
-  // ignored and DuckDB attempted to exhaust the eight-worker Emscripten pool.
-  await db.open({ path: ':memory:', maximumThreads: 2, filesystem: { reliableHeadRequests: true, allowFullHTTPReads: false, forceFullHTTPReads: false } });
+  // DuckDBConfig uses maximumThreads (camelCase). Explicitly bound I/O threads
+  // so extension signature validation cannot exhaust the eight-pthread pool.
+  // allowUnsignedExtensions is TEST ONLY for the exact pinned locally built
+  // CI artifact. Never apply this flag to production or third-party URLs.
+  await db.open({ path: ':memory:', maximumThreads: 2, allowUnsignedExtensions: true,
+    filesystem: { reliableHeadRequests: true, allowFullHTTPReads: false, forceFullHTTPReads: false } });
   const connection = await db.connect();
   try {
     await connection.query('SET threads=2');
@@ -35,8 +38,6 @@ try {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!bytes.length) throw new Error('Empty DuckLake extension');
     status.extensionBytes = bytes.length;
-    // DuckDB's extension path validator requires the exact .duckdb_extension
-    // suffix even for an Emscripten side module produced with .wasm appended.
     await db.registerFileBuffer('ducklake.duckdb_extension', bytes);
     status.checks.push('DuckLake WASM side module registered with valid suffix');
     await connection.query("LOAD 'ducklake.duckdb_extension'");
