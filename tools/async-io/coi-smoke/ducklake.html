@@ -16,9 +16,17 @@ try {
   status.version = await db.getVersion();
   if (!/2\.0\.0/.test(status.version)) throw new Error(`Wrong DuckDB version: ${status.version}`);
   status.checks.push('pinned DuckDB 2 runtime');
-  await db.open({ path: ':memory:', maximum_threads: 2, filesystem: { reliableHeadRequests: true, allowFullHTTPReads: false, forceFullHTTPReads: false } });
+  // DuckDBConfig uses maximumThreads (camelCase); maximum_threads was silently
+  // ignored and DuckDB attempted to exhaust the eight-worker Emscripten pool.
+  await db.open({ path: ':memory:', maximumThreads: 2, filesystem: { reliableHeadRequests: true, allowFullHTTPReads: false, forceFullHTTPReads: false } });
   const connection = await db.connect();
   try {
+    await connection.query('SET threads=2');
+    await connection.query('SET async_threads=1');
+    const settings = await connection.query("SELECT current_setting('threads')::INTEGER AS threads, current_setting('async_threads')::INTEGER AS async_threads");
+    status.ioSettings = { threads: Number(settings.getChild('threads')?.get(0)), asyncThreads: Number(settings.getChild('async_threads')?.get(0)) };
+    if (status.ioSettings.threads !== 2 || status.ioSettings.asyncThreads !== 1) throw new Error(`Unexpected worker settings: ${JSON.stringify(status.ioSettings)}`);
+    status.checks.push('bounded two CPU threads and one async I/O thread');
     const before = await connection.query('SELECT 42 AS answer');
     if (Number(before.getChild('answer')?.get(0)) !== 42) throw new Error('SELECT 42 failed');
     status.checks.push('SQL before extension load');
