@@ -28,6 +28,9 @@ RUN git clone --filter=blob:none https://github.com/duckdb/ducklake.git ducklake
 RUN cd /src/ducklake \
     && python3 duckdb/scripts/apply_extension_patches.py duckdb/.github/patches/extensions/ducklake/
 
+COPY instrument_initializer.py /tmp/instrument_initializer.py
+RUN python3 /tmp/instrument_initializer.py
+
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
     && git -C /opt/vcpkg checkout --detach "$VCPKG_REF" \
     && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
