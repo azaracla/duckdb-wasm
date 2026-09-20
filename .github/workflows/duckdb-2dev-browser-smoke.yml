@@ -30,7 +30,7 @@ jobs:
           submodules: false
           fetch-depth: 0
 
-      - name: Select verified COI artifact from successful compilation job
+      - name: Select verified 32-worker COI artifact from successful compilation job
         id: source
         shell: bash
         env:
@@ -55,7 +55,8 @@ jobs:
 
           params = urlencode({'branch': 'feat/duckdb-2dev-async-http', 'status': 'completed', 'per_page': 50})
           runs = fetch(f'https://api.github.com/repos/{repo}/actions/workflows/duckdb-2dev-coi.yml/runs?{params}')['workflow_runs']
-          fixed_at = '91f40a9d7c9c2903008a0f793641cd638767c32e'
+          # Do not silently fall back to the old four-worker build: its browser test deadlocked.
+          fixed_at = '1e9cdad9a3d3bb24d3508c2f2c6894ec9e566b5a'
           for run in sorted(runs, key=lambda item: item['id'], reverse=True):
               sha = run['head_sha']
               if subprocess.run(['git', 'merge-base', '--is-ancestor', fixed_at, sha], check=False).returncode != 0:
@@ -70,10 +71,10 @@ jobs:
                   continue
               with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
                   output.write(f'run_id={run["id"]}\n')
-              print(f'Selected verified COI artifact: run {run["id"]}, commit {sha}; compilation job green')
+              print(f'Selected verified 32-worker COI artifact: run {run["id"]}, commit {sha}; compilation job green')
               break
           else:
-              raise SystemExit('No completed, corrected, ancestor COI run with successful compilation and live runtime artifact')
+              raise SystemExit('No corrected 32-worker COI run with successful compilation and live runtime artifact')
           PY
 
       - uses: actions/download-artifact@v4
