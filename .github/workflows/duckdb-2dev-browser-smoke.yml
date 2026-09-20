@@ -98,7 +98,7 @@ jobs:
           command -v google-chrome || command -v chromium || command -v chromium-browser
           npm install --prefix "$ALPHA_SMOKE_DEPS" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund \
             esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0 \
-            wasm-feature-detect@1.6.1 web-worker@1.2.0
+            wasm-feature-detect@1.6.1 web-worker@1.2.0 js-sha256@0.11.1
 
       - name: Bundle ONLY browser API, COI dispatcher and pthread wrapper
         shell: bash
