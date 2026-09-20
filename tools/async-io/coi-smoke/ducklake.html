@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>DuckDB 2 DuckLake browser acceptance</title></head>
+<body><pre id="result">DuckLake loading</pre>
+<script type="module">
+import * as duckdb from './duckdb-browser.mjs';
+const status = window.__ducklakeSmoke = { done: false, ok: false, checks: [] };
+let db;
+try {
+  if (!crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') throw new Error('COOP/COEP and SharedArrayBuffer required');
+  status.checks.push('crossOriginIsolated');
+  const worker = new Worker('./duckdb-browser-coi.worker.js');
+  db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+  await db.instantiate(new URL('./duckdb-coi.wasm', location.href).href,
+    new URL('./duckdb-browser-coi.pthread.worker.js', location.href).href);
+  status.version = await db.getVersion();
+  if (!/2\.0\.0/.test(status.version)) throw new Error(`Wrong DuckDB version: ${status.version}`);
+  status.checks.push('pinned DuckDB 2 runtime');
+  await db.open({ path: ':memory:', maximum_threads: 2, filesystem: { reliableHeadRequests: true, allowFullHTTPReads: false, forceFullHTTPReads: false } });
+  const connection = await db.connect();
+  try {
+    const before = await connection.query('SELECT 42 AS answer');
+    if (Number(before.getChild('answer')?.get(0)) !== 42) throw new Error('SELECT 42 failed');
+    status.checks.push('SQL before extension load');
+    const response = await fetch('./ducklake.duckdb_extension.wasm', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`DuckLake artifact HTTP ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length) throw new Error('Empty DuckLake extension');
+    status.extensionBytes = bytes.length;
+    // Register through the same browser virtual filesystem used by SQL files.
+    await db.registerFileBuffer('ducklake.duckdb_extension.wasm', bytes);
+    status.checks.push('DuckLake WASM side module registered');
+    await connection.query("LOAD 'ducklake.duckdb_extension.wasm'");
+    status.checks.push('LOAD DuckLake in real Chromium WASM');
+    const extensions = await connection.query("SELECT extension_name, loaded FROM duckdb_extensions() WHERE extension_name = 'ducklake'");
+    if (extensions.numRows !== 1 || extensions.getChild('loaded')?.get(0) !== true) {
+      throw new Error('duckdb_extensions does not report ducklake as loaded');
+    }
+    status.checks.push('DuckLake loader reports loaded=true');
+    const after = await connection.query('SELECT 42 AS answer');
+    if (Number(after.getChild('answer')?.get(0)) !== 42) throw new Error('SQL after extension load failed');
+    status.checks.push('SQL after extension load');
+  } finally {
+    await connection.close();
+  }
+  status.ok = true;
+} catch (error) {
+  status.error = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
+  console.error('DUCKLAKE BROWSER FAILED', status.error);
+} finally {
+  if (db) try { await db.terminate(); } catch (error) { console.error('DuckDB terminate failed', error); }
+  status.done = true;
+  document.querySelector('#result').textContent = JSON.stringify(status, null, 2);
+  console.log('DUCKLAKE BROWSER RESULT', JSON.stringify(status));
+}
+</script></body></html>
