@@ -27,10 +27,11 @@ try {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!bytes.length) throw new Error('Empty DuckLake extension');
     status.extensionBytes = bytes.length;
-    // Register through the same browser virtual filesystem used by SQL files.
-    await db.registerFileBuffer('ducklake.duckdb_extension.wasm', bytes);
-    status.checks.push('DuckLake WASM side module registered');
-    await connection.query("LOAD 'ducklake.duckdb_extension.wasm'");
+    // DuckDB's extension path validator requires the exact .duckdb_extension
+    // suffix even for an Emscripten side module produced with .wasm appended.
+    await db.registerFileBuffer('ducklake.duckdb_extension', bytes);
+    status.checks.push('DuckLake WASM side module registered with valid suffix');
+    await connection.query("LOAD 'ducklake.duckdb_extension'");
     status.checks.push('LOAD DuckLake in real Chromium WASM');
     const extensions = await connection.query("SELECT extension_name, loaded FROM duckdb_extensions() WHERE extension_name = 'ducklake'");
     if (extensions.numRows !== 1 || extensions.getChild('loaded')?.get(0) !== true) {
