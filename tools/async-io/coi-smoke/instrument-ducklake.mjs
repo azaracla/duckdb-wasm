@@ -10,6 +10,13 @@ const replaceOne = (needle, replacement, label) => {
   if (count !== 1) throw new Error(`DuckLake instrumentation ${label}: expected 1 match; found ${count}`);
   js = js.replace(needle, replacement);
 };
+// The ordinary eight-worker pool is already exhausted during db.open(), well
+// before LOAD, despite the SQL threads=2 / async_threads=1 limits. Isolate
+// resource starvation from dynamic-linker failures without recompiling WASM:
+// Emscripten's generated JS sets the preallocated pool size at runtime. The
+// pthread worker and shared-memory binary are unchanged. This is an explicit
+// DuckLake-only experiment, NOT a validated production pool-size decision.
+replaceOne('var pthreadPoolSize = 8;', 'var pthreadPoolSize = 16;', 'DuckLake-only pthread pool');
 const probe = stage => `console.log('[ducklake-linker] ${stage}');`;
 replaceOne('var metadata = getDylinkMetadata(binary);',
   `${probe('read dylink metadata')} var metadata = getDylinkMetadata(binary); ${probe('dylink metadata ready')}`, 'metadata');
@@ -26,4 +33,4 @@ replaceOne('if (runtimeInitialized) {\n                                    init(
 replaceOne('moduleLoaded(getExports());',
   `${probe('getExports start')} moduleLoaded(getExports()); ${probe('getExports finished')}`, 'getExports');
 fs.writeFileSync(target, js);
-console.log('DuckLake generated-JS linker probes installed (CI only)');
+console.log('DuckLake generated-JS probes installed with 16-worker experimental pool (CI only)');
