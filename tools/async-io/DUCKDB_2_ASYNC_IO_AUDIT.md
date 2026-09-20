@@ -37,6 +37,15 @@ curl -s http://127.0.0.1:8767/__trace
 
 Only assert `max_overlapping_ranges >= 2` if the SQL query ran successfully, the trace was reset directly before this one query, no extraneous clients made ranged GETs, and requests genuinely originated from DuckDB. A separate unit test intentionally sends synthetic concurrent requests to validate that the *server* detects overlaps; its green result is **not** proof of DuckDB concurrency. `python3 -m unittest discover -s tools/async-io -p 'test_*.py' -v` runs this test with the rest of the lightweight CI checks and without recompiling DuckDB.
 
+## Browser runtime progress log
+
+- **2026-09-20 — COI runtime milestone reached.** Commit `722ce810cfd7b43523e654195b227b2f9de4e521` reduced the eager Emscripten pthread pool from 32 to 8. Workflow run `35517024549` then compiled the pinned DuckDB 2 COI runtime and passed the real Chromium smoke: cross-origin isolation, DuckDB `v2.0.0-dev1`, `SELECT 42`, and `SET threads=1/2/4`.
+- **Parquet extension path fixed.** The first real `read_parquet()` acceptance attempt failed before any file I/O because the loadable-extension build tried to autoload `parquet.duckdb_extension.wasm`. The experimental COI build was changed to statically link Parquet; the C++/WASM compile itself subsequently passed.
+- **Browser filesystem path identified.** DuckDB 2 alpha WASM rejects the legacy `builtin_httpfs` switch. The acceptance harness now uses `AsyncDuckDB.registerFileURL(..., DuckDBDataProtocol.HTTP, false)` and queries the registered logical path, exercising duckdb-wasm's browser filesystem rather than native `httpfs`.
+- **First successful remote Parquet SQL, but negative Range result.** Run `35523765282` returned the correct `COUNT(*) = 200000` from the HTTP-hosted 20-row-group Parquet fixture. The server trace showed exactly one non-ranged `GET /fixture.parquet`, HTTP 200, 1,077,564 bytes, `max_overlapping_ranges=0`. This is a valid negative result: the query succeeded, but no Range I/O or concurrency occurred.
+- **Root cause of the full-file GET found.** `WebFileSystem::WebFile::WriteInfo` serializes `forceFullHttpReads=true` whenever `filesystem.force_full_http_reads` is unset because it uses `.value_or(true)`. The browser runtime then bypasses its Range probing and performs a whole-file GET. The acceptance harness now explicitly opens DuckDB with `forceFullHTTPReads=false`, `allowFullHTTPReads=false`, and `reliableHeadRequests=true` so failure to use Range cannot silently fall back to a full download.
+- **Next proof obligation.** Re-run the same single-query Parquet gate with those filesystem flags. A green result still requires >=2 overlapping HTTP Range GETs from that one DuckDB query; a successful ranged-but-serial trace remains a failure and will move the investigation to DuckDB 2 read-ahead / async scheduler settings and task routing.
+
 ## Mandatory end-to-end measurement gate
 
 1. Same pinned core, browser and reproducible Parquet fixture with multiple row groups/column chunks, served from the instrumented HTTP Range server above.
