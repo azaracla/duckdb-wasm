@@ -78,6 +78,35 @@ function summarize(samples) {
   };
 }
 
+function sampleSignature(sample) {
+  return `${sample.rangeGets}:${sample.transferredBytes}`;
+}
+
+function selectComparableCohort(left, right) {
+  const counts = new Map();
+  for (const sample of [...left, ...right]) {
+    const signature = sampleSignature(sample);
+    counts.set(signature, (counts.get(signature) || 0) + 1);
+  }
+  const common = [...counts.entries()]
+    .filter(([signature]) =>
+      left.some(sample => sampleSignature(sample) === signature) &&
+      right.some(sample => sampleSignature(sample) === signature))
+    .sort((a, b) => b[1] - a[1]);
+  if (!common.length) return null;
+  const signature = common[0][0];
+  const [rangeGets, transferredBytes] = signature.split(':').map(Number);
+  const baselineSamples = left.filter(sample => sampleSignature(sample) === signature);
+  const brokerSamples = right.filter(sample => sampleSignature(sample) === signature);
+  return {
+    signature: { rangeGets, transferredBytes },
+    baselineSamples,
+    brokerSamples,
+    baseline: summarize(baselineSamples),
+    broker: summarize(brokerSamples),
+  };
+}
+
 async function runTrial(browser, transport, iteration) {
   const page = await browser.newPage();
   const errors = [];
@@ -158,6 +187,12 @@ async function main() {
 
     const baseline = summarize(samples['sync-xhr']);
     const broker = summarize(samples.broker);
+    const comparable = selectComparableCohort(samples['sync-xhr'], samples.broker);
+    const comparableSpeedup = comparable ? {
+      median: comparable.baseline.medianMs / comparable.broker.medianMs,
+      mean: comparable.baseline.meanMs / comparable.broker.meanMs,
+      p95: comparable.baseline.p95Ms / comparable.broker.p95Ms,
+    } : null;
     const report = {
       benchmark: 'DuckDB 2 WASM remote Parquet transport A/B',
       methodology: {
@@ -176,12 +211,31 @@ async function main() {
         mean: baseline.meanMs / broker.meanMs,
         p95: baseline.p95Ms / broker.p95Ms,
       },
+      comparableCohort: comparable ? {
+        signature: comparable.signature,
+        baseline: comparable.baseline,
+        broker: comparable.broker,
+        speedup: comparableSpeedup,
+      } : null,
       samples,
     };
     console.log('DUCKDB ASYNC IO BENCHMARK', JSON.stringify(report));
     const output = path.resolve(process.env.ALPHA_BENCHMARK_OUT || `async-io-benchmark-${delayMs}ms.json`);
     fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
     console.log(`Benchmark report written to ${output}`);
+    if (delayMs >= 100) {
+      if (!comparable || comparable.baseline.repetitions < 2 || comparable.broker.repetitions < 2) {
+        throw new Error('Latency benchmark needs at least two comparable samples per transport');
+      }
+      if (comparableSpeedup.median < 1.5) {
+        throw new Error(`Expected latency-bound median speedup >= 1.5x, got ${comparableSpeedup.median.toFixed(3)}x`);
+      }
+    } else if (comparable && comparable.baseline.repetitions >= 2 && comparable.broker.repetitions >= 2) {
+      const regression = comparable.broker.medianMs / comparable.baseline.medianMs;
+      if (regression > 1.10) {
+        throw new Error(`Zero-latency comparable median regressed by more than 10%: ${regression.toFixed(3)}x baseline`);
+      }
+    }
   } finally {
     if (browser) await browser.close();
     rangeServer.kill('SIGTERM');
