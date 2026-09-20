@@ -164,7 +164,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
-      ALPHA_SMOKE_DEPS: ${{ runner.temp }}/duckdb-alpha-smoke
+      # runner.temp is unavailable in job-level env expressions; github.workspace is allowed.
+      ALPHA_SMOKE_DEPS: ${{ github.workspace }}/.alpha-smoke-deps
     steps:
       - uses: actions/checkout@v6
         with:
