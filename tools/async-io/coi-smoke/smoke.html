@@ -218,11 +218,24 @@ try {
       if (!reset.ok) throw new Error(`Trace reset failed: HTTP ${reset.status}`);
       // This HTTP URL is derived only from the validated local origin above.
       const query = "SELECT SUM(id)::HUGEINT AS id_sum FROM read_parquet('fixture.parquet')";
-      const startedAt = performance.now();
-      const rows = await connection.query(query);
-      const idSum = String(rows.getChild('id_sum')?.get(0));
-      if (idSum !== '19999900000') throw new Error(`Unexpected SUM(id): ${idSum}`);
-      status.parquet = { idSum, queryMs: performance.now() - startedAt };
+      const repeat = Math.max(1, Math.min(20, Number(params.get('repeat') || 1)));
+      const samples = [];
+      let idSum = null;
+      for (let iteration = 0; iteration < repeat; iteration++) {
+        const startedAt = performance.now();
+        const rows = await connection.query(query);
+        idSum = String(rows.getChild('id_sum')?.get(0));
+        if (idSum !== '19999900000') throw new Error(`Unexpected SUM(id): ${idSum}`);
+        samples.push(performance.now() - startedAt);
+      }
+      const sorted = [...samples].sort((a, b) => a - b);
+      status.parquet = {
+        idSum,
+        queryMs: samples[samples.length - 1],
+        samplesMs: samples,
+        medianMs: sorted[Math.floor(sorted.length / 2)],
+        repeat,
+      };
       const response = await fetch(`${origin}/__trace`, { cache: 'no-store' });
       if (!response.ok) throw new Error(`Trace fetch failed: HTTP ${response.status}`);
       status.rangeTrace = await response.json();
