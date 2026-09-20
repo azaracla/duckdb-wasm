@@ -11,6 +11,7 @@ on:
       - scripts/wasm_build_lib.sh
       - tools/async-io/port_api.py
       - tools/async-io/port_webdb_alpha.py
+      - tools/async-io/patch_webdb_config_alpha.py
       - tools/async-io/patch_core_alpha.py
       - tools/async-io/pins.json
       - submodules/duckdb
@@ -59,6 +60,8 @@ jobs:
           python3 tools/async-io/port_api.py --check
           python3 tools/async-io/port_webdb_alpha.py --apply
           python3 tools/async-io/port_webdb_alpha.py --check
+          python3 tools/async-io/patch_webdb_config_alpha.py --apply
+          python3 tools/async-io/patch_webdb_config_alpha.py --check
           python3 tools/async-io/patch_core_alpha.py --apply
           python3 tools/async-io/patch_core_alpha.py --check
           git diff --check
@@ -89,7 +92,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: alpha-coi-emsdk-3.1.57-${{ runner.os }}-${{ hashFiles('lib/**', 'scripts/wasm_build_lib.sh', 'tools/async-io/port_api.py', 'tools/async-io/port_webdb_alpha.py', 'tools/async-io/patch_core_alpha.py') }}
+          key: alpha-coi-emsdk-3.1.57-${{ runner.os }}-${{ hashFiles('lib/**', 'scripts/wasm_build_lib.sh', 'tools/async-io/port_api.py', 'tools/async-io/port_webdb_alpha.py', 'tools/async-io/patch_webdb_config_alpha.py', 'tools/async-io/patch_core_alpha.py') }}
           restore-keys: |
             alpha-coi-emsdk-3.1.57-${{ runner.os }}-
 
