@@ -72,13 +72,25 @@ try {
         duckdb.DuckDBDataProtocol.HTTP,
         false,
       );
+      await connection.query("SET async_threads=2");
+      await connection.query("SET read_ahead_depth=4");
+      const ioSettings = await connection.query(
+        "SELECT current_setting('threads')::INTEGER AS threads, current_setting('async_threads')::INTEGER AS async_threads, current_setting('read_ahead_depth')::INTEGER AS read_ahead_depth"
+      );
+      status.ioSettings = {
+        threads: Number(ioSettings.getChild('threads')?.get(0)),
+        asyncThreads: Number(ioSettings.getChild('async_threads')?.get(0)),
+        readAheadDepth: Number(ioSettings.getChild('read_ahead_depth')?.get(0)),
+      };
       const reset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
       if (!reset.ok) throw new Error(`Trace reset failed: HTTP ${reset.status}`);
       // This HTTP URL is derived only from the validated local origin above.
-      const query = "SELECT COUNT(*) AS row_count FROM read_parquet('fixture.parquet')";
+      const query = "SELECT SUM(id)::HUGEINT AS id_sum FROM read_parquet('fixture.parquet')";
       const startedAt = performance.now();
       const rows = await connection.query(query);
-      status.parquet = { rowCount: String(rows.getChild('row_count')?.get(0)), queryMs: performance.now() - startedAt };
+      const idSum = String(rows.getChild('id_sum')?.get(0));
+      if (idSum !== '19999900000') throw new Error(`Unexpected SUM(id): ${idSum}`);
+      status.parquet = { idSum, queryMs: performance.now() - startedAt };
       const response = await fetch(`${origin}/__trace`, { cache: 'no-store' });
       if (!response.ok) throw new Error(`Trace fetch failed: HTTP ${response.status}`);
       status.rangeTrace = await response.json();
