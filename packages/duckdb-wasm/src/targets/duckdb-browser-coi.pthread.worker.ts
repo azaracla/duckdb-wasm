@@ -82,9 +82,11 @@ const handleMessage = (event: MessageEvent<any>): void => {
             console.error('[coi pthread] module initialization threw', data.workerID, error);
             throw error;
         }
-    } else if (data.cmd === 'duckdb-http-range-broker-ready') {
-        (globalThis as any).__duckdbCentralRangeBrokerReady = true;
-        traceStartup((pthread_api.getModule() as any)?.workerID ?? 0, 'central-range-broker-ready');
+    } else if (data.cmd === 'duckdb-http-range-broker-port') {
+        const port = data.port as MessagePort;
+        port.start();
+        (globalThis as any).__duckdbRangeBrokerPort = port;
+        traceStartup((pthread_api.getModule() as any)?.workerID ?? 0, 'range-broker-port-ready');
     } else if (data.cmd === 'registerFileHandle') {
         globalThis.DUCKDB_RUNTIME._files = globalThis.DUCKDB_RUNTIME._files || new Map();
         globalThis.DUCKDB_RUNTIME._files.set(data.fileName, data.fileHandle);
