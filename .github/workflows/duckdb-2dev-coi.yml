@@ -1,4 +1,5 @@
-# One targeted build: only COI/pthreads, no TPC-H, Rust, shell, MVP or EH.
+# Experimental branch only: one COI build, followed by a minimal real-browser smoke.
+# No TPC-H, Rust, shell, MVP/EH, full monorepo install or broad Karma matrix.
 name: DuckDB 2 alpha / COI build
 
 on:
@@ -13,7 +14,10 @@ on:
       - tools/async-io/port_webdb_alpha.py
       - tools/async-io/patch_webdb_config_alpha.py
       - tools/async-io/patch_core_alpha.py
+      - tools/async-io/check_generated_coi.mjs
+      - tools/async-io/coi-smoke/**
       - tools/async-io/pins.json
+      - packages/duckdb-wasm/src/**
       - submodules/duckdb
       - .gitmodules
 
@@ -68,8 +72,7 @@ jobs:
           git diff --stat -- lib
           git -C submodules/duckdb diff --check
           git -C submodules/duckdb diff --stat -- src/main/extension/extension_load.cpp
-          # The core gitlink stays pinned. Source patch is applied only in this
-          # disposable checkout, without modifying core history or security policy.
+          # The core gitlink stays pinned; the core patch affects only this checkout.
 
       - uses: mymindstorm/setup-emsdk@v14
         with:
@@ -85,8 +88,6 @@ jobs:
           npm install --global --no-audit --no-fund js-beautify@1.15.4
           emcc --version | head -n 1
 
-      # Restore/save separately to keep objects after failed builds. The
-      # ExternalProject gets the compiler launchers from lib/cmake/duckdb.cmake.
       - name: Restore COI compiler cache
         id: ccache
         uses: actions/cache/restore@v4
@@ -129,7 +130,7 @@ jobs:
             }
           done
 
-      - name: Verify generated JS is syntactically valid and retains required exports
+      - name: Verify generated JS retains required WASM exports
         shell: bash
         run: |
           node --check packages/duckdb-wasm/src/bindings/duckdb-coi.js
@@ -154,4 +155,59 @@ jobs:
             packages/duckdb-wasm/src/bindings/duckdb-coi.wasm
             packages/duckdb-wasm/src/bindings/duckdb-coi.pthread.js
           if-no-files-found: error
+          retention-days: 2
+
+  # Isolated browser gate consumes the successful artifact, not a second C++ build.
+  # A failed build cannot become a green browser run; no old artifacts are reused.
+  browser-smoke:
+    needs: coi
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      ALPHA_SMOKE_DEPS: ${{ runner.temp }}/duckdb-alpha-smoke
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Download COI runtime from this workflow run only
+        uses: actions/download-artifact@v4
+        with:
+          name: alpha-coi-runtime
+          path: packages/duckdb-wasm/src/bindings
+
+      - name: Verify downloaded runtime matches the fixed Emscripten glue
+        shell: bash
+        run: |
+          for file in duckdb-coi.js duckdb-coi.wasm duckdb-coi.pthread.js; do
+            test -s "packages/duckdb-wasm/src/bindings/$file"
+          done
+          node --check packages/duckdb-wasm/src/bindings/duckdb-coi.js
+          node tools/async-io/check_generated_coi.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
+
+      - name: Install only browser smoke dependencies (no Puppeteer download)
+        shell: bash
+        run: |
+          command -v google-chrome || command -v chromium || command -v chromium-browser
+          npm install --prefix "$ALPHA_SMOKE_DEPS" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund \
+            esbuild@0.20.2 apache-arrow@17.0.0 qs@6.14.1 puppeteer-core@22.8.0
+
+      - name: Bundle only the real COI API and worker
+        shell: bash
+        run: node tools/async-io/coi-smoke/build.mjs build/dev/coi-smoke
+
+      - name: Run isolated Chrome SQL and 1/2/4-thread smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          node tools/async-io/coi-smoke/run.cjs build/dev/coi-smoke 2>&1 | tee browser-smoke.log
+
+      - name: Upload browser smoke diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-coi-browser-smoke-log
+          path: browser-smoke.log
+          if-no-files-found: ignore
           retention-days: 2
