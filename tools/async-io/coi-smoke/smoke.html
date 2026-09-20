@@ -6,7 +6,11 @@
 <script type="module">
 import * as duckdb from './duckdb-browser.mjs';
 
-const status = window.__alphaSmoke = { done: false, ok: false, checks: [] };
+const params = new URL(location.href).searchParams;
+const transport = params.get('transport') || 'broker';
+const runControls = params.get('controls') !== '0';
+if (!['broker', 'sync-xhr'].includes(transport)) throw new Error(`Unsupported transport: ${transport}`);
+const status = window.__alphaSmoke = { done: false, ok: false, checks: [], transport };
 
 async function runAsyncFetchBaseline(origin) {
   const count = 4;
@@ -118,16 +122,18 @@ try {
   status.checks.push('crossOriginIsolated');
   const worker = new Worker('./duckdb-browser-coi.worker.js');
   db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+  const pthreadWorkerURL = new URL('./duckdb-browser-coi.pthread.worker.js', location.href);
+  if (transport === 'sync-xhr') pthreadWorkerURL.searchParams.set('rangeBroker', '0');
   await db.instantiate(
     new URL('./duckdb-coi.wasm', location.href).href,
-    new URL('./duckdb-browser-coi.pthread.worker.js', location.href).href,
+    pthreadWorkerURL.href,
   );
   const version = await db.getVersion();
   if (!/2\.0\.0/.test(version)) throw new Error(`Unexpected DuckDB version: ${version}`);
   status.version = version;
   status.checks.push('runtime initialization and DuckDB 2 version');
 
-  const rangeBase = new URL(location.href).searchParams.get('rangeBase');
+  const rangeBase = params.get('rangeBase');
   await db.open({
     path: ':memory:',
     maximum_threads: rangeBase !== null ? 2 : 4,
@@ -168,22 +174,24 @@ try {
       }
       const origin = base.origin;
 
-      // Independent controls. Neither can satisfy the DuckDB gate: they only
-      // distinguish browser async fetch transport from synchronous XHR transport.
-      const asyncBaselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
-      if (!asyncBaselineReset.ok) throw new Error(`Async baseline trace reset failed: HTTP ${asyncBaselineReset.status}`);
-      try {
-        status.asyncFetchBaseline = await runAsyncFetchBaseline(origin);
-      } catch (error) {
-        status.asyncFetchBaselineError = error instanceof Error ? error.message : String(error);
-      }
+      // Independent diagnostics are useful for the acceptance smoke, but the
+      // benchmark disables them so they cannot warm the network path before SQL.
+      if (runControls) {
+        const asyncBaselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
+        if (!asyncBaselineReset.ok) throw new Error(`Async baseline trace reset failed: HTTP ${asyncBaselineReset.status}`);
+        try {
+          status.asyncFetchBaseline = await runAsyncFetchBaseline(origin);
+        } catch (error) {
+          status.asyncFetchBaselineError = error instanceof Error ? error.message : String(error);
+        }
 
-      const baselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
-      if (!baselineReset.ok) throw new Error(`Baseline trace reset failed: HTTP ${baselineReset.status}`);
-      try {
-        status.syncXHRBaseline = await runSyncXHRBaseline(origin);
-      } catch (error) {
-        status.syncXHRBaselineError = error instanceof Error ? error.message : String(error);
+        const baselineReset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
+        if (!baselineReset.ok) throw new Error(`Baseline trace reset failed: HTTP ${baselineReset.status}`);
+        try {
+          status.syncXHRBaseline = await runSyncXHRBaseline(origin);
+        } catch (error) {
+          status.syncXHRBaselineError = error instanceof Error ? error.message : String(error);
+        }
       }
 
       // DuckDB 2 alpha WASM routes remote files through the browser filesystem.
@@ -197,6 +205,7 @@ try {
       await connection.query("SET threads=2");
       await connection.query("SET async_threads=2");
       await connection.query("SET read_ahead_depth=4");
+      await connection.query("SET enable_external_file_cache=false");
       const ioSettings = await connection.query(
         "SELECT current_setting('threads')::INTEGER AS threads, current_setting('async_threads')::INTEGER AS async_threads, current_setting('read_ahead_depth')::INTEGER AS read_ahead_depth"
       );
@@ -218,13 +227,23 @@ try {
       if (!response.ok) throw new Error(`Trace fetch failed: HTTP ${response.status}`);
       status.rangeTrace = await response.json();
       const trace = status.rangeTrace;
-      if (trace.completed_range_gets < 2 || trace.max_overlapping_ranges < 2) {
-        throw new Error(`DuckDB Parquet I/O not concurrent: completed_range_gets=${trace.completed_range_gets}, max_overlapping_ranges=${trace.max_overlapping_ranges}`);
+      if (trace.completed_range_gets < 2) {
+        throw new Error(`DuckDB Parquet query emitted too few Range reads: ${trace.completed_range_gets}`);
+      }
+      if (transport === 'broker' && trace.max_overlapping_ranges < 2) {
+        throw new Error(`DuckDB Parquet I/O not concurrent with broker: completed_range_gets=${trace.completed_range_gets}, max_overlapping_ranges=${trace.max_overlapping_ranges}`);
+      }
+      if (transport === 'sync-xhr' && trace.max_overlapping_ranges !== 1) {
+        throw new Error(`Sync-XHR baseline unexpectedly overlapped: max_overlapping_ranges=${trace.max_overlapping_ranges}`);
       }
       if (!trace.events.filter(event => event.method === 'GET' && event.range).every(event => event.status === 206)) {
         throw new Error('One or more Parquet Range responses were not HTTP 206');
       }
-      status.checks.push('one DuckDB Parquet query with >=2 overlapping HTTP Range reads');
+      status.checks.push(
+        transport === 'broker'
+          ? 'one DuckDB Parquet query with >=2 overlapping HTTP Range reads'
+          : 'one DuckDB Parquet query with serialized HTTP Range reads'
+      );
       console.log('DUCKDB PARQUET RANGE TRACE', JSON.stringify({ parquet: status.parquet, trace }));
     }
   } finally {
