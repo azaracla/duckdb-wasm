@@ -1,4 +1,4 @@
-# Chromium integration gate: reuse the pinned compiled artifacts, never recompile C++.
+# Chromium integration gate: reuse pinned compiled artifacts; never recompile C++ here.
 name: DuckDB 2 alpha / DuckLake browser
 
 on:
@@ -37,8 +37,7 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      # Build 35534038014 keeps the pre-open async thread cap and also
-      # registers the statically linked Parquet extension in loadable mode.
+      # The pre-open async cap and static Parquet registration are both included.
       - name: Download async-capped DuckDB 2 loadable COI runtime with static Parquet
         uses: actions/download-artifact@v4
         with:
@@ -47,11 +46,13 @@ jobs:
           name: alpha-coi-loadable-runtime
           path: packages/duckdb-wasm/src/bindings
 
-      - name: Download pinned DuckLake wasm_threads side module
+      # Diagnostic side module built from the same pinned sources; traces
+      # DuckLakeInitializer stages to identify the intermittent ATTACH hang.
+      - name: Download instrumented DuckLake wasm_threads side module
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: '35528049778'
+          run-id: '35538996453'
           name: alpha-ducklake-wasm-threads
           path: ${{ runner.temp }}/ducklake-artifact
 
@@ -80,8 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Instrument only the downloaded disposable JavaScript, never the
-          # pinned source or the ordinary COI performance build.
+          # Instrument only disposable generated JavaScript, never the production runtime.
           node tools/async-io/coi-smoke/instrument-ducklake.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
           node tools/async-io/coi-smoke/build.mjs "$RUNNER_TEMP/coi-site"
           cp tools/async-io/coi-smoke/ducklake.html "$RUNNER_TEMP/coi-site/ducklake.html"
