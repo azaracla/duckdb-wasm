@@ -44,6 +44,38 @@ try {
       }
       status.checks.push(`threads=${count}, SQL=42`);
     }
+
+    // Opt-in performance acceptance gate, NEVER a synthetic fetch benchmark.
+    // run.cjs supplies rangeBase only when ALPHA_PARQUET_FIXTURE points to an
+    // actual Parquet fixture. Reset the trace immediately before ONE DuckDB
+    // query so unrelated browser probes cannot count as query-originated I/O.
+    const rangeBase = new URL(location.href).searchParams.get('rangeBase');
+    if (rangeBase !== null) {
+      const base = new URL(rangeBase);
+      if (base.protocol !== 'http:' || base.hostname !== '127.0.0.1' || base.pathname !== '/' || base.search || base.hash) {
+        throw new Error('Range fixture must be the local 127.0.0.1 HTTP origin');
+      }
+      const origin = base.origin;
+      const reset = await fetch(`${origin}/__reset`, { cache: 'no-store' });
+      if (!reset.ok) throw new Error(`Trace reset failed: HTTP ${reset.status}`);
+      // This HTTP URL is derived only from the validated local origin above.
+      const query = `SELECT COUNT(*) AS row_count FROM read_parquet('${origin}/fixture.parquet')`;
+      const startedAt = performance.now();
+      const rows = await connection.query(query);
+      status.parquet = { rowCount: String(rows.getChild('row_count')?.get(0)), queryMs: performance.now() - startedAt };
+      const response = await fetch(`${origin}/__trace`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Trace fetch failed: HTTP ${response.status}`);
+      status.rangeTrace = await response.json();
+      const trace = status.rangeTrace;
+      if (trace.completed_range_gets < 2 || trace.max_overlapping_ranges < 2) {
+        throw new Error(`DuckDB Parquet I/O not concurrent: completed_range_gets=${trace.completed_range_gets}, max_overlapping_ranges=${trace.max_overlapping_ranges}`);
+      }
+      if (!trace.events.filter(event => event.method === 'GET' && event.range).every(event => event.status === 206)) {
+        throw new Error('One or more Parquet Range responses were not HTTP 206');
+      }
+      status.checks.push('one DuckDB Parquet query with >=2 overlapping HTTP Range reads');
+      console.log('DUCKDB PARQUET RANGE TRACE', JSON.stringify({ parquet: status.parquet, trace }));
+    }
   } finally {
     await connection.close();
   }
