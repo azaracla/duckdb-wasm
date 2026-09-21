@@ -46,17 +46,17 @@ jobs:
           name: alpha-coi-loadable-runtime
           path: packages/duckdb-wasm/src/bindings
 
-      # Diagnostic side module traces catalog construction, FinalizeLoad and
-      # initializer entry/steps to identify the intermittent ATTACH hang.
-      - name: Download instrumented DuckLake wasm_threads side module
+      # Diagnostic-only DuckLake build bypasses the duckdb_secrets() preload
+      # that hung during ATTACH; this is NOT a production fix.
+      - name: Download no-secrets-preload DuckLake diagnostic side module
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: '35540897926'
+          run-id: '35565276788'
           name: alpha-ducklake-wasm-threads
           path: ${{ runner.temp }}/ducklake-artifact
 
-      - name: Assert exact extension/core pin and nonempty artifacts
+      - name: Assert exact extension/core pin and diagnostic artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +67,7 @@ jobs:
           grep -Fx 'duckdb_ref=43f897e5f3446bde2b36cef5dc137eea14211fd9' "$RUNNER_TEMP/ducklake-artifact/build-manifest.txt"
           grep -Fx 'ducklake_ref=eb7b95df82fc3ba0ace777e34ef1c81280477042' "$RUNNER_TEMP/ducklake-artifact/build-manifest.txt"
           grep -Fx 'emscripten=3.1.57' "$RUNNER_TEMP/ducklake-artifact/build-manifest.txt"
+          grep -Fx 'diagnostic_skip_secrets_preload=1' "$RUNNER_TEMP/ducklake-artifact/build-manifest.txt"
           node tools/async-io/check_generated_coi.mjs packages/duckdb-wasm/src/bindings/duckdb-coi.js
 
       - name: Install isolated browser-only dependencies
