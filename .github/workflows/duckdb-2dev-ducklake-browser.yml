@@ -46,12 +46,13 @@ jobs:
           name: alpha-coi-loadable-runtime
           path: packages/duckdb-wasm/src/bindings
 
-      # Diagnostic side module built from the same pinned sources.
+      # Diagnostic side module traces catalog construction, FinalizeLoad and
+      # initializer entry/steps to identify the intermittent ATTACH hang.
       - name: Download instrumented DuckLake wasm_threads side module
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: '35538996453'
+          run-id: '35540897926'
           name: alpha-ducklake-wasm-threads
           path: ${{ runner.temp }}/ducklake-artifact
 
