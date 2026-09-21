@@ -92,18 +92,25 @@ jobs:
           test -s "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension"
           cmp "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension" "$RUNNER_TEMP/coi-site/ducklake.duckdb_extension.wasm"
 
-      # Each invocation starts a new HTTP server, Chrome process, WASM runtime,
-      # DuckLake extension and in-memory catalog. Fail on the first bad run;
-      # keep that attempt's log for postmortem instead of masking flakiness.
+      # Each invocation starts a fresh HTTP server, Chrome process, WASM runtime,
+      # extension and in-memory catalog. Collect ALL attempts for diagnosing
+      # intermittent failure; fail the gate if even one attempt fails.
       - name: Chromium DuckLake stability gate - three independent launches
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          failures=0
           for attempt in 1 2 3; do
             echo "=== DuckLake independent Chromium attempt ${attempt}/3 ==="
-            node tools/async-io/coi-smoke/ducklake-run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee "ducklake-browser-${attempt}.log"
+            if node tools/async-io/coi-smoke/ducklake-run.cjs "$RUNNER_TEMP/coi-site" 2>&1 | tee "ducklake-browser-${attempt}.log"; then
+              echo "DUCKLAKE ATTEMPT ${attempt}: PASS"
+            else
+              echo "DUCKLAKE ATTEMPT ${attempt}: FAIL"
+              failures=$((failures + 1))
+            fi
           done
-          echo 'PASS: three independent DuckLake Chromium launches and SQL acceptance'
+          echo "DUCKLAKE STABILITY: $((3 - failures))/3 passed"
+          test "$failures" -eq 0
 
       - name: Upload DuckLake browser diagnostics
         if: always()
