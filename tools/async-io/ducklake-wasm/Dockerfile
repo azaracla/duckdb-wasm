@@ -28,12 +28,14 @@ RUN git clone --filter=blob:none https://github.com/duckdb/ducklake.git ducklake
 RUN cd /src/ducklake \
     && python3 duckdb/scripts/apply_extension_patches.py duckdb/.github/patches/extensions/ducklake/
 
-# Experimental diagnostics: distinguish catalog construction / FinalizeLoad
-# from the already-instrumented initializer before diagnosing the hang.
+# Diagnostic ONLY: trace catalog/init and bypass the hanging secrets preload.
+# This side module MUST NOT be distributed as a normal DuckLake binary.
 COPY instrument_initializer.py /tmp/instrument_initializer.py
 COPY instrument_catalog.py /tmp/instrument_catalog.py
+COPY skip_secrets_probe.py /tmp/skip_secrets_probe.py
 RUN python3 /tmp/instrument_initializer.py \
-    && python3 /tmp/instrument_catalog.py
+    && python3 /tmp/instrument_catalog.py \
+    && python3 /tmp/skip_secrets_probe.py
 
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
     && git -C /opt/vcpkg checkout --detach "$VCPKG_REF" \
@@ -61,6 +63,7 @@ RUN artifact="$(find /src/ducklake/build/wasm_threads -type f -name 'ducklake.du
        "duckdb_source_id=${DUCKDB_SOURCE_ID}" \
        "ducklake_ref=${DUCKLAKE_REF}" \
        "emscripten=3.1.57" \
+       "diagnostic_skip_duckdb_secrets=true" \
        > /out/build-manifest.txt
 
 FROM scratch AS artifact
